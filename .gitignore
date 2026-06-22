@@ -1,1 +1,4 @@
 venv/\n__pycache__/\n*.pyc
+
+# Virtual Environments
+.venv/
