@@ -11,7 +11,7 @@ def test_load():
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16, # 节省显存 TODO: 还有哪些数据类型，区别是啥？ 
-        device_type="cuda"
+        device_map="cuda"
         )
     model.eval()
 
