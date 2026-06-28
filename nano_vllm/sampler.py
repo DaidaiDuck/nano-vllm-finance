@@ -1,12 +1,7 @@
 # nano_vllm/sampler.py
 import torch
-from dataclasses import dataclass 
-
-class SamplingParams: 
-    temperature:float = 0.0 # 默认greedy 
-    top_k: int = -1, # 每次生成 token 时，只从概率最高的 k 个候选 token 中采样  -1:表示不做top-k截断，从全部词表中采样
-    top_p: float = 1.0, # 1.0表示不做截断，包含全部词表，等价于关闭 top-p 过滤. 
-    max_tokens: int = 100 
+from dataclasses import dataclass
+from nano_vllm.types import SamplingParams
 
 class Sampler:
     def sample(self, logits: torch.Tensor, params: SamplingParams) -> int: 
