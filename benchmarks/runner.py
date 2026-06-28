@@ -83,12 +83,13 @@ class BenchmarkRunner:
 
         # M1: 没有 streaming, 暂时把 TTFT 设为 0
         # M4 加 streaming 后再正常测
-        output = self.engine.generate(prompt, params, request_id)
+        output = self.engine.generate(prompt, params)
 
         total_time = time.perf_counter() - start 
 
-        output_text = output[0].text if isinstance(output, list) else output.text 
-        output_len = len(output.token_ids)
+        result = output[0] if isinstance(output, list) else output
+        output_text = result.text
+        output_len = len(result.token_ids)
 
         return RequestMetrics(
             prompt_len=prompt_len,
