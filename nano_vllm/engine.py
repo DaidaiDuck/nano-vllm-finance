@@ -1,9 +1,4 @@
 # nano_vllm/engine.py
-from pickletools import read_bytes4
-
-from h11 import Request
-from sympy import false
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm.sampler import Sampler
