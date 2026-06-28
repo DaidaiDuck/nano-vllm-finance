@@ -88,8 +88,7 @@ class BenchmarkRunner:
         total_time = time.perf_counter() - start 
 
         output_text = output[0].text if isinstance(output, list) else output.text 
-        output_tokens = self.tokenizer.encode(output_text) 
-        output_len = len(output_tokens) 
+        output_len = len(output.token_ids)
 
         return RequestMetrics(
             prompt_len=prompt_len,
