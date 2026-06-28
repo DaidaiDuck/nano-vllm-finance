@@ -57,7 +57,7 @@ class SimpleEngine:
 
             with torch.no_grad():
                 outputs = self.model(
-                    input_ids = torch.tensor([[next_token]], device="cuda") # 转化成[batch_size,seq_len] 
+                    input_ids = torch.tensor([[next_token]], device="cuda"), # 转化成[batch_size,seq_len]
                     past_key_values = past_key_values,
                     use_cache=True #TODO:这里如果不加这行会怎么样? 
                 )
@@ -75,7 +75,7 @@ class SimpleEngine:
             text=text,
             token_ids=output_ids,
             finished=finished,
-            finished_reason=finished_reason 
+            finish_reason=finished_reason 
         )
         
 
