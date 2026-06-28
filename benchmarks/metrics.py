@@ -7,8 +7,8 @@ class RequestMetrics:
     """单个请求的指标"""
     prompt_len: int      # tokens
     output_len: int      # tokens 
+    total_time: float    # End-to-end time (s)  non-default fields must come before fields that have a default.
     ttft: float = 0.0    # Time To First Token (s)
-    total_time: float    # End-to-end time (s) 
     tpot: float = 0.0    # Time Per Output Token (s)
     request_id: str = ""
 
