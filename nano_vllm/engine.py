@@ -28,10 +28,10 @@ class SimpleEngine:
         """生成一个请求的输出"""
 
         # Apply chat template
-        messages = [{"role":"user", "message":prompt}]
+        messages = [{"role":"user", "content":prompt}]
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
-        input_ids = self.tokenizer.encode(text) 
+        input_ids = self.tokenizer.encode(text, return_tensors="pt").to("cuda") 
 
         # Prefill 
         with torch.no_grad():
@@ -42,13 +42,13 @@ class SimpleEngine:
         past_key_values = outputs.past_key_values
         
         # Sample next token 
-        logits = outputs[0,-1,:]
+        logits = outputs.logits[0,-1,:]
         next_token = self.sampler.sample(logits, params)
         output_ids = [next_token] 
 
         # Decode loop 
         finished_reason = "length"
-        finished = false
+        finished = False
         for _ in range(params.max_tokens - 1):
             if next_token == self.tokenizer.eos_token_id:
                 finished_reason = "stop"
@@ -57,12 +57,12 @@ class SimpleEngine:
 
             with torch.no_grad():
                 outputs = self.model(
-                    input_ids = [[next_token]], # 转化成[batch_size,seq_len] 
+                    input_ids = torch.tensor([[next_token]], device="cuda") # 转化成[batch_size,seq_len] 
                     past_key_values = past_key_values,
                     use_cache=True #TODO:这里如果不加这行会怎么样? 
                 )
             past_key_values = outputs.past_key_values
-            logits = outputs[0, -1, :] 
+            logits = outputs.logits[0, -1, :] 
             next_token = self.sampler.sample(logits, params) 
             output_ids.append(next_token) 
         
