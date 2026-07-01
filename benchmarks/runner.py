@@ -72,30 +72,47 @@ class BenchmarkRunner:
             self, 
             prompt: str, 
             params: SamplingParams, 
-            request_id: str = "", 
+            request_id: str = "0", 
     ) -> RequestMetrics: 
         """运行单个请求并测量"""
-        prompt_tokens = self.tokenizer.encode(prompt)
-        prompt_len = len(prompt_tokens) 
+        # 真实 prefill 长度 (含 chat template 标记), 与引擎实际处理的输入一致
+        prompt_len = self.engine.count_prompt_tokens(prompt)
 
-        # 测 TTFT (用 stream API, M1 没有就用 hack)
+        # 测 TTFT
         start = time.perf_counter()
+        first_token_time = None 
+        token_ids = []
 
-        # M1: 没有 streaming, 暂时把 TTFT 设为 0
-        # M4 加 streaming 后再正常测
-        output = self.engine.generate(prompt, params)
+        for token in self.engine.generate_stream(prompt, params):
+            if first_token_time is None:
+                first_token_time = time.perf_counter() 
+            token_ids.append(token) 
+        
+        # Total Duration
+        end = time.perf_counter()
+        total_time = end - start
+        output_len = len(token_ids) 
 
-        total_time = time.perf_counter() - start 
+        # Calculate benchmark 
+        if output_len > 0: 
+            ttft = first_token_time - start 
 
-        result = output[0] if isinstance(output, list) else output
-        output_text = result.text
-        output_len = len(result.token_ids)
-
+            if output_len > 1:
+                decode_time = end - first_token_time
+                tpot = decode_time/ (output_len - 1)
+            else:
+                tpot = 0.0
+        else:
+            ttft = total_time
+            tpot = 0.0
+    
         return RequestMetrics(
             prompt_len=prompt_len,
             output_len=output_len,
             total_time=total_time,
             request_id=request_id, 
+            tpot=tpot,
+            ttft=ttft,
         )        
     
 
