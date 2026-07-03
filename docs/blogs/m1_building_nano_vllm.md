@@ -1,5 +1,7 @@
 # Building nano-vllm from Scratch, Part 1: A Correct Single-Request Engine
 
+**English** | [中文](m1_building_nano_vllm.zh.md)
+
 > Series: reimplementing the core ideas of vLLM, one milestone at a time.
 > **M1 — the baseline.** Get single-request LLM inference (prefill + decode)
 > running correctly on top of HuggingFace, with a clean vLLM-style API, so every
@@ -12,33 +14,37 @@
 
 ## TL;DR
 
-<!-- 3–5 sentences: what M1 is, what it deliberately is NOT, and the one
-     takeaway (correctness first, HF-identical greedy output). Fill in last. -->
+nano-vllm reconstructs the core of vLLM from scratch to expose how modern LLM
+serving works. Part 1 (M1) is the baseline: a single-request engine that performs
+prefill + decode on top of a HuggingFace model, paired with a custom sampler and a
+clean `LLM` API. It deliberately omits every optimization — no custom KV cache, no
+paging, no batching. Its single requirement is correctness: in greedy mode the
+output matches HuggingFace **token-for-token**, giving every later optimization a
+trustworthy reference to beat.
 
-- TODO
+## 1. Why rebuild vLLM?
 
----
+vLLM is fast, but speed alone does not convey understanding. The goal of this series
+is to explain *why* LLM inference is structured the way it is — why there are
+distinct prefill and decode phases, what a KV cache actually provides, how sampling
+and streaming work — by reconstructing the system from first principles, one
+milestone at a time. M1 is the foundation; later parts address the KV cache, then
+paging, then batching. A flawed foundation propagates its bugs into everything built
+on top of it, so M1's sole objective is correctness.
 
-## 1. Why build another vLLM?
+## 2. Correctness before speed
 
-<!-- Motivation. Learning by reconstruction; understand prefill/decode, KV cache,
-     sampling, streaming from first principles. State the milestone roadmap
-     (M1 baseline → M2 custom KV cache → M3 PagedAttention → M4 batching ...). -->
+Simplicity is M1's defining virtue. The components that make vLLM fast — a custom KV
+cache, PagedAttention, continuous batching, a scheduler — are intentionally left
+out. Each is a milestone in its own right, and introducing one now would mean
+debugging two hard problems simultaneously: the generation loop *and* the
+optimization. Delegating everything except the parts under study to HuggingFace
+allows the loop to be validated in isolation and gives each later optimization a
+clean before/after comparison.
 
-- TODO
+## 3. Architecture
 
-## 2. The goal of M1: correctness, not speed
-
-<!-- The design principle: simplicity is M1's virtue. Explain the non-goals
-     (no custom KV cache, no paging, no batching) and why deferring them is the
-     right call. Reference m1_design.md §2. -->
-
-- TODO
-
-## 3. Architecture in one diagram
-
-<!-- Drop in the ASCII diagram from the design doc; walk through LLM →
-     SimpleEngine → (Tokenizer, Model, Sampler) → GPU. Keep it short. -->
+The engine is three components behind a facade:
 
 ```
 LLM (user entry)
@@ -48,15 +54,17 @@ LLM (user entry)
        └─ Sampler (custom)
 ```
 
-- TODO
+`LLM` is the user-facing entry point (vLLM-style: `llm.generate(prompt, params)`).
+It wraps a `SimpleEngine` that owns the prefill + decode loop and coordinates the
+tokenizer, the model, and the sampler. The KV cache is HuggingFace's built-in
+implementation, reused via `use_cache=True` rather than reimplemented.
 
 ## 4. The generation loop: prefill + decode
 
-<!-- The heart of the post. Explain:
-     - prefill = one forward over the whole prompt, fills the KV cache
-     - decode  = feed ONE token at a time, reuse the cache (use_cache=True)
-     - why we only feed the new token (the O(1)-per-step trick the cache buys)
-     Include the generate_stream code sketch and the "first token = TTFT" marker. -->
+The generation loop is the core of M1, and it runs in two phases. **Prefill** is a
+single forward pass over the entire prompt; it produces the logits for the next
+token and populates the KV cache with the prompt's keys and values. **Decode** then
+proceeds one token at a time:
 
 ```python
 # prefill once, then decode one token at a time reusing the KV cache
@@ -69,59 +77,76 @@ for _ in range(max_tokens - 1):
     yield next_token
 ```
 
-- TODO: explain `use_cache`, why `logits[0, -1, :]`, EOS handling.
+The essential technique is that each decode step feeds **only the new token**, not
+the entire sequence. `use_cache=True` retains every previous key/value, so step *n*
+performs O(1) input work rather than re-reading all *n* tokens. The relevant logits
+are read as `logits[0, -1, :]` — batch 0, the *last* position, the full vocabulary —
+because the model emits a distribution at every position, but only the one following
+the current text is needed. The loop terminates on the EOS token or upon reaching
+`max_tokens`.
 
-## 5. Sampling, implemented by hand
+## 5. A hand-written sampler
 
-<!-- Why not HF generate(): black box, and M4 needs batched sampling anyway.
-     Walk the pipeline: greedy shortcut → temperature → top-k → top-p → softmax
-     → multinomial. One or two gotchas (in-place masking, top-p shift-by-one). -->
+HuggingFace's `generate()` is deliberately avoided: it is a black box that is
+awkward to customize, and batched sampling (a later milestone) must be hand-written
+regardless, so an in-house implementation is preferable to one that would later be
+discarded. The `Sampler` is a short pipeline: a greedy shortcut when
+`temperature == 0` (a plain `argmax`), otherwise temperature scaling → top-k → top-p
+→ softmax → `multinomial`. The subtle parts are the masking details — filtering
+writes `-inf` into rejected logits so that softmax zeros them, and top-p requires a
+shift-by-one so the token that *crosses* the threshold is retained rather than
+dropped.
 
-- TODO
+## 6. The chat-template requirement
 
-## 6. The chat-template trap
+A frequent mistake is feeding a raw prompt directly to an instruction-tuned model.
+Such models are trained on a specific conversation format with special tokens;
+without it, the model *continues* the text instead of answering it. The fix is the
+tokenizer's chat template:
 
-<!-- The single most common beginner bug: feeding the raw prompt to an
-     instruction-tuned model. Show apply_chat_template + add_generation_prompt,
-     and what garbled output looks like without it. -->
+```python
+text = tokenizer.apply_chat_template(
+    messages, tokenize=False, add_generation_prompt=True,
+)
+```
 
-- TODO
+`add_generation_prompt=True` appends the assistant turn opener (e.g.
+`<|im_start|>assistant\n`), signaling that it is the model's turn to respond.
+Omitting it produces degenerate output — a common and easily overlooked failure
+mode.
 
-## 7. Streaming for free (and why it matters for TTFT)
+## 7. Streaming and TTFT measurement
 
-<!-- Streaming ≠ HTTP/SSE. A Python generator IS streaming. It's what lets us
-     measure the exact instant the first token appears (TTFT). Mention the
-     torch.cuda.synchronize() timing subtlety. -->
+Streaming is not synonymous with HTTP or SSE — a Python generator *is* streaming.
+Converting the loop's `return` into `yield` is essentially free and exposes the one
+quantity required to measure latency correctly: the exact instant the first token is
+produced. This is TTFT (Time To First Token), which cannot be measured without a
+token-by-token interface. One subtlety applies — CUDA kernels execute
+asynchronously, so `torch.cuda.synchronize()` is called before the timestamp is
+taken; otherwise the measurement would reflect when the work was *queued*, not when
+the GPU completed it.
 
-- TODO
+## 8. Correctness: nano-vllm == HuggingFace
 
-## 8. Proving it's correct: nano-vllm == HuggingFace
-
-<!-- The most important test. Greedy output must match HF token-for-token.
-     Explain the do_sample=False gotcha (Qwen's generation_config defaults to
-     sampling). This test becomes the non-regression contract for M2–M6. -->
+The most important test asserts token-level parity:
 
 ```python
 # tests/test_m1_vs_hf.py — greedy must match HF exactly
 assert nano.token_ids == hf_greedy_ids
 ```
 
-**Result:** the full M1 suite passes — **23/23** (12 CPU unit + 11 GPU
-integration) on A100 80GB SXM with Qwen2.5-3B-Instruct. `test_m1_vs_hf` matches
-HuggingFace token-for-token across all prompts, so the generation loop is
-verified correct.
-
-- TODO: expand into prose; mention the `do_sample=False` gotcha.
+In greedy mode, the engine's output must match HuggingFace **token-for-token**. One
+caveat applies: Qwen's `generation_config` defaults to sampling (`do_sample=True`,
+`temperature=0.7`), so `do_sample=False` must be passed to force HF into greedy —
+otherwise the reference is stochastic and the test is meaningless. The full M1 suite
+passes **23/23** (12 CPU unit + 11 GPU integration) on an A100 80GB SXM with
+Qwen2.5-3B-Instruct, with `test_m1_vs_hf` matching across every prompt. This
+token-for-token parity establishes that the generation loop is correct, and it
+serves as the non-regression contract every later milestone must keep green.
 
 ## 9. Benchmarks
 
-<!-- PENDING GPU RUN. Pull numbers from benchmarks/results/m1/ once available.
-     Environment is fixed in design/benchmark_environment.md (A100 80GB SXM,
-     Qwen2.5-3B bf16, PyTorch 2.4 / CUDA 12.4). Keep placeholders until then. -->
-
-Environment: A100 80GB SXM, Qwen2.5-3B bf16 (see
-[benchmark_environment.md](../design/benchmark_environment.md)). `Throughput` is
-output tokens/s.
+Three single-request scenarios were benchmarked (`Throughput` is output tokens/s):
 
 | Scenario | Prompt | Output | Throughput | P99 latency | TTFT | TPOT |
 |----------|--------|--------|------------|-------------|------|------|
@@ -129,34 +154,42 @@ output tokens/s.
 | medium_chat | ~526 | 200 | 29.2 tok/s | 7.38 s | 38 ms | 34.2 ms |
 | long_context | ~1999 | 100 | 29.2 tok/s | 3.47 s | 89 ms | 33.7 ms |
 
-**What the numbers say** (the theory, confirmed):
+The results are consistent. **Throughput is flat at ~29 tok/s** irrespective of
+prompt length — for a single request it equals decode speed (≈ 1/TPOT). **TPOT
+remains ~34 ms** from 125 to 2000 prompt tokens, because decode is
+memory-bandwidth-bound: each step is dominated by streaming the model weights rather
+than by attention over the cache. **TTFT scales with prompt length** (36 → 89 ms)
+because prefill is compute-bound, though a ~35 ms fixed overhead masks this until the
+prompt grows large.
 
-- **Throughput is flat ~29 tok/s** — for a single request it's just decode speed
-  (≈ 1/TPOT), independent of prompt length.
-- **TPOT is ~34 ms everywhere** (125 → 2000 prompt tokens) — decode is
-  memory-bandwidth-bound; each step streams the weights, not the KV cache.
-- **TTFT tracks prompt length** (36 → 89 ms) — prefill is compute-bound, though a
-  ~35 ms fixed overhead hides it until prompts get long.
-- **Latency ≈ TTFT + output_len × TPOT** holds to <1%: wall-clock time is set by
-  how many tokens you *emit*, not how long the prompt is.
+The central result is that end-to-end latency follows a simple law, verified to
+within 1%:
 
-<!-- TODO: turn into prose. Good place for a "latency = TTFT + N·TPOT" diagram.
-     Honest caveat: ~29 tok/s is a baseline (per-token cuda sync, no batching);
-     the DynamicCache torch.cat cost is still small at ≤2100 tokens — tease that
-     M2's length-sweep is where the O(n²) shows up. -->
+```
+latency ≈ TTFT + output_len × TPOT
+```
 
+This formula separates the two physical phases — compute-bound prefill (TTFT) and
+memory-bound decode (TPOT) — and explains why `long_context` and `short_chat`
+exhibit nearly identical latency despite a 16× difference in prompt size: both emit
+100 tokens, and the *output* length dominates wall-clock time. One caveat: ~29 tok/s
+is a baseline, not a headline figure — a per-token `cuda.synchronize()` is used for
+timing accuracy, and no batching is present.
 
-## 10. What M1 deliberately leaves broken (→ M2)
+## 10. Deferred to later milestones
 
-<!-- The honest limitations section. Lead with the KV cache: HF DynamicCache
-     grows via torch.cat, O(n²) copy + memory jitter. This is the cliffhanger
-     that sets up M2 (custom pre-allocated cache). Tease the M1-vs-M2 numbers. -->
+M1 is intentionally minimal. Its explicit limitations:
 
-- The KV cache is HF's `DynamicCache`: it grows by `torch.cat` every step —
-  O(n²) copy traffic and memory jitter. **M2 replaces it.**
-- Single request only; batch=1 hardcoded; no HTTP; no prefix caching.
+- **Single request only** — `batch=1` is hardcoded; no concurrency.
+- **Relies on HuggingFace's built-in KV cache** rather than a custom one.
+- **No HTTP serving** — streaming is in-process via a generator.
+- **No prefix caching** — repeated prompts are recomputed from scratch.
+- **EOS is the only stop condition** — no custom stop strings.
 
-- TODO
+None of these is a defect in M1; they constitute the roadmap. With a correct,
+measured baseline in place and a test that guarantees it cannot be silently broken,
+subsequent parts replace these components one at a time — beginning with the KV
+cache.
 
 ---
 
@@ -164,4 +197,4 @@ output tokens/s.
 
 - Design doc: [m1_design.md](../design/m1_design.md)
 - Benchmark setup: [benchmark_environment.md](../design/benchmark_environment.md)
-- Next: **Part 2 — a custom pre-allocated KV cache** ([m2_design.md](../design/m2_design.md))
+- Next: **Part 2 — the KV cache** ([m2_design.md](../design/m2_design.md))
