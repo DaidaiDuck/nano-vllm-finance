@@ -35,3 +35,23 @@ def test_llm_generate_returns_request_outputs():
     assert isinstance(out.finished, bool)
     assert isinstance(out.text, str)
     assert len(out.text) > 0
+
+
+def test_generate_stream_matches_generate():
+    """流式输出的 token 序列应与非流式 generate 完全一致。
+
+    用 greedy (temperature=0.0) 保证确定性, 两条路径走的是同一套
+    prefill/decode 逻辑, 产出的 token_ids 必须逐个相等。
+    """
+    from nano_vllm import LLM, SamplingParams
+
+    llm = LLM(MODEL_NAME)
+    params = SamplingParams(temperature=0.0, max_tokens=16)
+    prompt = "Hello"
+
+    full = llm.generate(prompt, params)[0]
+    streamed = list(llm.generate_stream(prompt, params))
+
+    assert streamed == full.token_ids
+    # 解码结果也应一致
+    assert llm.engine.tokenizer.decode(streamed) == full.text
