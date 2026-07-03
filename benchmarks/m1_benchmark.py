@@ -1,4 +1,7 @@
-# benchmarks/run_benchmark.py
+# benchmarks/m1_benchmark.py
+# Run as a module from the repo root so the `benchmarks` and `nano_vllm`
+# packages resolve:
+#   python -m benchmarks.m1_benchmark --scenarios short_chat medium_chat long_context
 
 import argparse
 from nano_vllm import LLM
