@@ -64,11 +64,10 @@ class SimpleEngine:
 
         # Decode loop 
         finished_reason = "length"
-        finished = False
+        finished = True
         for _ in range(params.max_tokens - 1):
             if next_token == self.tokenizer.eos_token_id:
                 finished_reason = "stop"
-                finished = True
                 break
 
             with torch.no_grad():
