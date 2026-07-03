@@ -12,25 +12,34 @@
 
 | Item | Value |
 |------|-------|
-| GPU | NVIDIA A100-80GB (single) <!-- TODO: confirm actual card --> |
+| Provider | RunPod (Secure Cloud) |
+| GPU | NVIDIA A100 80GB SXM (single) |
+| Memory bandwidth | ~2039 GB/s (HBM2e) |
+| Host RAM | 117 GB |
+| vCPU | 16 |
+| Disk | NVMe |
 | ECC | off |
 | Clocks | locked (fixed SM/memory clocks for reproducibility) |
 | Interconnect | N/A (single GPU) |
 
-> If the final runs use a different card (e.g. RTX 4090 24GB), update this table
-> **once** here and re-state it nowhere else.
+> Chosen A100 SXM over PCIe because decode (TPOT) is memory-bandwidth-bound and
+> SXM has higher HBM bandwidth. 80GB removes memory as a variable and covers M3's
+> high-concurrency scenario. **Do not change the card between milestones** — the
+> M1↔M2↔M3 comparison depends on it being fixed.
 
 ## Software
 
 | Item | Value |
 |------|-------|
+| Base image | `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` |
+| OS | Ubuntu 22.04 |
+| Python | 3.11 |
+| PyTorch | 2.4.0 |
+| CUDA | 12.4.1 |
 | Model | Qwen/Qwen2.5-3B-Instruct |
 | dtype | bfloat16 |
-| CUDA | <TODO> |
-| PyTorch | <TODO> |
-| transformers | <TODO> |
-| Driver | <TODO> |
-| OS | <TODO> |
+| transformers | <TODO: record `pip show transformers` version on the pod> |
+| Driver | <TODO: record `nvidia-smi` driver version on the pod> |
 
 ## Measurement protocol
 
