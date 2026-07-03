@@ -106,7 +106,12 @@ for _ in range(max_tokens - 1):
 assert nano.token_ids == hf_greedy_ids
 ```
 
-- TODO
+**Result:** the full M1 suite passes — **23/23** (12 CPU unit + 11 GPU
+integration) on A100 80GB SXM with Qwen2.5-3B-Instruct. `test_m1_vs_hf` matches
+HuggingFace token-for-token across all prompts, so the generation loop is
+verified correct.
+
+- TODO: expand into prose; mention the `do_sample=False` gotcha.
 
 ## 9. Benchmarks
 

@@ -300,6 +300,25 @@ def test_generate_stream_matches_generate():
 > Integration tests requiring a real model + CUDA are gated behind
 > `NANO_VLLM_INTEGRATION=1` and run on a smaller model (Qwen2.5-0.5B-Instruct).
 
+### Status — all green ✅
+
+Full suite passes on the pinned environment
+([benchmark_environment.md](benchmark_environment.md); Python 3.11.10,
+PyTorch 2.4 / CUDA 12.4, A100 80GB SXM, model = Qwen2.5-3B-Instruct):
+
+| Stage | Tests | Result |
+|-------|-------|--------|
+| CPU unit (`test_sampler`, `test_types`) | 12 | ✅ 12 passed |
+| GPU integration (`test_m1_vs_hf`, `test_engine`, `test_engine_m1`, `test_generation`) | 11 | ✅ 11 passed |
+| **Total** | **23** | **✅ all passed** |
+
+Critically, `test_m1_vs_hf::test_greedy_matches_hf` passes for **all** prompts —
+nano-vllm greedy output matches HuggingFace **token-for-token**, confirming the
+prefill/decode loop is correct. This is the non-regression contract M2–M6 must
+keep green.
+
+Reproduce with `bash scripts/run_tests.sh` (see [tests/README.md](../../tests/README.md)).
+
 ## 7. Performance Characteristics
 
 > Hardware, software, scenarios, and metric definitions are specified once in
