@@ -80,12 +80,16 @@ output = llm.generate(prompt, params)
 Coordinates tokenizer, model, and sampler, and owns the prefill + decode loop.
 Two core methods:
 
-- `generate_stream()` — yields one token id at a time (streaming / benchmarking)
-- `generate()` — drives `generate_stream()` to completion and returns a
-  `RequestOutput`
+- `generate_stream()` — runs prefill + decode and yields one token id at a time
+  (streaming / benchmarking)
+- `generate()` — runs prefill + decode and returns a complete `RequestOutput`
+  (collected `token_ids` + decoded `text`)
 
-`generate()` is implemented **on top of** `generate_stream()`, so the two paths
-share identical decode logic and cannot diverge.
+The two methods are **separate implementations** of the same prefill/decode loop —
+`generate()` does **not** call `generate_stream()`. Their outputs must stay
+identical; this is enforced by a test
+(`tests/test_engine.py::test_generate_stream_matches_generate`) rather than by
+shared code. The duplication is a known cleanup item for a later milestone.
 
 #### `Sampler` (`sampler.py`)
 
@@ -263,29 +267,34 @@ CPU-only, no model required:
 - Top-p restricts to the nucleus
 - `SamplingParams` / `RequestOutput` field semantics
 
-### Correctness: nano-vllm vs HuggingFace
+### Correctness: nano-vllm vs HuggingFace (`tests/test_m1_vs_hf.py`)
 
-**The most important test.** Greedy output must match HF exactly:
+**The most important test.** Greedy output must match HF **token-for-token**. The
+test reuses the same loaded model/tokenizer, replicates nano's exact input
+construction (chat template + `add_generation_prompt`), and forces HF greedy with
+`do_sample=False` — required because Qwen's `generation_config` defaults to
+sampling (`do_sample=True`, `temperature=0.7`):
 
 ```python
-def test_greedy_matches_hf():
-    """nano-vllm greedy output must equal HF generate() exactly."""
-    for prompt in test_prompts:
-        nano = nano_llm.generate(prompt, SamplingParams(temperature=0))
-        hf = hf_model.generate(prompt, do_sample=False)
-        assert nano.text == hf.text
+@pytest.mark.parametrize("prompt", PROMPTS)
+def test_greedy_matches_hf(llm, prompt):
+    model, tokenizer = llm.engine.model, llm.engine.tokenizer
+    nano = llm.generate(prompt, SamplingParams(temperature=0.0, max_tokens=MAX_TOKENS))[0]
+    hf_ids = _hf_greedy_ids(model, tokenizer, prompt)  # same template, HF greedy, prompt stripped
+    assert nano.token_ids == hf_ids
+    assert nano.text == tokenizer.decode(hf_ids)
 ```
 
 Passing this proves the generation loop is bug-free. Every later optimization
 must keep this test green (a non-regression contract).
 
-### Streaming consistency
+### Streaming consistency (`tests/test_engine.py::test_generate_stream_matches_generate`)
 
 ```python
-def test_stream_matches_generate():
-    tokens_stream = list(llm.generate_stream(prompt, params))
-    out_batch = llm.generate(prompt, params)
-    assert tokens_stream == out_batch[0].token_ids
+def test_generate_stream_matches_generate():
+    streamed = list(llm.generate_stream(prompt, params))
+    full = llm.generate(prompt, params)[0]
+    assert streamed == full.token_ids
 ```
 
 > Integration tests requiring a real model + CUDA are gated behind
@@ -293,10 +302,16 @@ def test_stream_matches_generate():
 
 ## 7. Performance Characteristics
 
-> **TBD** — benchmarks not yet run. Numbers will be filled in after the M1
-> benchmark suite (`benchmarks/`) is executed on the target GPU.
+> Hardware, software, scenarios, and metric definitions are specified once in
+> [benchmark_environment.md](benchmark_environment.md) and shared across M1–M3
+> for comparability.
 
-### Benchmark data (RTX 4090, Qwen2.5-3B, bf16)
+> **TBD** — benchmarks not yet run. Numbers will be filled in after the M1
+> benchmark suite (`benchmarks/`) is executed.
+
+### Benchmark data
+
+See [benchmark_environment.md](benchmark_environment.md) for the exact setup.
 
 | Scenario                  | Throughput | P99 Latency | TTFT | TPOT |
 |---------------------------|------------|-------------|------|------|
