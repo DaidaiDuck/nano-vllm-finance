@@ -1,4 +1,6 @@
 # nano_vllm/engine.py
+from typing import Iterator
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm.sampler import Sampler
@@ -16,9 +18,25 @@ class SimpleEngine:
             torch_dtype=torch.bfloat16,
             device_map="cuda"
         )  
-        self.model.eval() 
-        self.sampler = Sampler() 
-    
+        self.model.eval()
+        self.sampler = Sampler()
+
+    def _format_prompt(self, prompt: str) -> str:
+        """套上 chat template, 返回真正喂给模型的字符串。"""
+        messages = [{"role": "user", "content": prompt}]
+        return self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+    def count_prompt_tokens(self, prompt: str) -> int:
+        """返回套上 chat template 后真实的 prefill token 数。
+
+        注意: 这比 tokenizer.encode(prompt) 多出 template 的特殊标记
+        (<|im_start|>user ... <|im_end|><|im_start|>assistant), 才是模型
+        实际处理的输入长度。
+        """
+        return len(self.tokenizer.encode(self._format_prompt(prompt)))
+
     def generate(
             self,
             prompt: str, 
@@ -27,13 +45,11 @@ class SimpleEngine:
     ) -> RequestOutput:
         """生成一个请求的输出"""
 
-        # Apply chat template
-        messages = [{"role":"user", "content":prompt}]
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
-        input_ids = self.tokenizer.encode(text, return_tensors="pt").to("cuda") 
+        # Apply chat template (see count_prompt_tokens / _format_prompt)
+        text = self._format_prompt(prompt)
+        input_ids = self.tokenizer.encode(text, return_tensors="pt").to("cuda")
 
-        # Prefill 
+        # Prefill
         with torch.no_grad():
             outputs = self.model(
                 input_ids = input_ids,
@@ -59,7 +75,7 @@ class SimpleEngine:
                 outputs = self.model(
                     input_ids = torch.tensor([[next_token]], device="cuda"), # 转化成[batch_size,seq_len]
                     past_key_values = past_key_values,
-                    use_cache=True #TODO:这里如果不加这行会怎么样? 
+                    use_cache=True 
                 )
             past_key_values = outputs.past_key_values
             logits = outputs.logits[0, -1, :] 
@@ -77,7 +93,99 @@ class SimpleEngine:
             finished=finished,
             finish_reason=finished_reason 
         )
+    
+    def generate_stream(
+            self,
+            prompt: str, 
+            params: SamplingParams, 
+            request_id: str = "0", 
+    ) -> Iterator[int]: 
+        """
+        Streaming generation. Yield one token at a time.
+
+        Usage: 
+            for token in engine.generate_stream(prompt, params):
+                print(token)
+            
+        For benchmarking TTFT/TPOT:
+            start = time.perf_counter()
+            first_token_time = None 
+            for token in engine.generate_stream(prompt, params): 
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+            ttft = first_token_time - start 
+        """
+        # Apply chat template.
+        # Why apply_chat_template instead of encode(messages):
+        #   instruct models are trained on a specific conversation format with
+        #   special tokens (e.g. <|im_start|>user ... <|im_end|>). encode() takes
+        #   raw text only and would omit those markers, so the model would "continue"
+        #   the text instead of "answering" it. apply_chat_template wraps messages
+        #   into the model's own format (stored in the tokenizer config).
+        # tokenize=False:
+        #   return the formatted string only (don't encode yet), so the next line
+        #   can encode it with our own options (return_tensors="pt", .to("cuda")).
+        # add_generation_prompt=True:
+        #   append the assistant turn opener (e.g. <|im_start|>assistant\n) so the
+        #   model knows it's its turn to speak. Required for inference; only set
+        #   False when building training data.
+        text = self._format_prompt(prompt)
+        input_ids = self.tokenizer.encode(text, return_tensors="pt").to("cuda")
+
+        # === Prefill ===
+        # no_grad: inference never calls .backward(), so disable autograd to skip
+        # building the computation graph. Saves a lot of memory and is slightly
+        # faster. (torch.inference_mode() is an even more aggressive equivalent.)
+        with torch.no_grad():
+            outputs = self.model(
+                input_ids=input_ids,
+                use_cache=True,
+            )
+        past_key_values = outputs.past_key_values
+        # logits shape is [batch, seq_len, vocab_size].
+        #   0  -> first (and only) sequence in the batch
+        #   -1 -> the last position; the model emits a next-token distribution for
+        #         every position, but we only want the token that follows the whole
+        #         prompt, i.e. the last one
+        #   :  -> the full vocab vector (a score per token) for the sampler
+        logits = outputs.logits[0, -1, :]
+
+        # Sample first token
+        next_token = self.sampler.sample(logits, params)
+
+        # CUDA kernels run asynchronously: model(...) returns once the work is
+        # queued, not when the GPU finishes. synchronize() blocks the CPU until the
+        # GPU is actually done, so the TTFT timestamp taken right after yield is
+        # accurate. Only needed for latency benchmarking; skip it in production
+        # since it gives up CPU/GPU overlap.
+        torch.cuda.synchronize()
+        yield next_token # First token out. 
+
+        # === Decode loop ===
+        for _ in range(params.max_tokens - 1):
+            if next_token == self.tokenizer.eos_token_id: 
+                break
+
+            inp = torch.tensor([[next_token]], device="cuda")
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids = inp,
+                    past_key_values = past_key_values,
+                    use_cache=True,
+                )
+                past_key_values = outputs.past_key_values
+                logits = outputs.logits[0,-1,:] 
+                next_token = self.sampler.sample(logits, params)
+
+                torch.cuda.synchronize()
+                yield next_token
         
+
+
+
+
+
+
 
 class LLM:
     """
@@ -101,10 +209,36 @@ class LLM:
         outputs = []
         for prompt in prompts:
             self.counter += 1
-            request_id = str(self.counter) 
+            request_id = str(self.counter)
             output = self.engine.generate(prompt, samplingParams, request_id)
             outputs.append(output)
-        
+
         return outputs
+
+    def generate_stream(
+        self,
+        prompt: str,
+        samplingParams: SamplingParams | None = None,
+    ) -> Iterator[int]:
+        """流式生成: 逐个 yield token id (单 prompt)。
+
+        与 generate 不同, 这里只支持单个 prompt (流式无法交错多个请求),
+        供 benchmark 测 TTFT/TPOT 使用。
+        """
+        if samplingParams is None:
+            samplingParams = SamplingParams()
+        self.counter += 1
+        request_id = str(self.counter)
+        yield from self.engine.generate_stream(prompt, samplingParams, request_id)
+
+    def count_prompt_tokens(self, prompt: str) -> int:
+        """真实 prefill token 数 (含 chat template 标记)。"""
+        return self.engine.count_prompt_tokens(prompt)
+    
+    
+    
+
+
+        
         
     
