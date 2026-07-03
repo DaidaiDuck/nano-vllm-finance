@@ -1,6 +1,4 @@
 # nano_vllm/generation.py
-import token
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm import Sampler, SamplingParams 
@@ -25,7 +23,7 @@ def generate(
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,           # 只返回字符串，不做 tokenization（下一行手动 encode，避免重复）
-        add_generation_prompt=False  # 不自动追加 <|im_start|>assistant\n（此处手动控制）
+        add_generation_prompt=True  # 追加 <|im_start|>assistant\n，告诉模型该它回答了（推理必须为 True）
     )
     # return_tensors="pt": 返回 PyTorch tensor 而非 list；.to("cuda"): 移到 GPU，与模型同设备
     input_ids = tokenizer.encode(text, return_tensors="pt").to("cuda")
@@ -46,7 +44,7 @@ def generate(
     for _ in range(params.max_tokens - 1):
         # 检查 EOS
         if next_token == tokenizer.eos_token_id:
-            break; 
+            break
 
         # 生成下一个token的logits
         # next_token 是 int（token id），需包装成 [1,1] 的 tensor（batch=1, seq_len=1）才能喂给模型
@@ -92,5 +90,6 @@ def main():
         print(f"\nPrompt: {prompt}")
         print(f"Response: {response}")
 
-    if __name__ == "__main__":
-        main()
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,6 @@
 # nano_vllm/types.py
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
-from xmlrpc.client import boolean
 
 @dataclass
 class SamplingParams:
@@ -16,7 +15,7 @@ class RequestOutput:
     prompt: str 
     text: str 
     token_ids: list[int]
-    finished: boolean
+    finished: bool
     finish_reason: Optional[str] = None  # "stop" | "length"
 
     
