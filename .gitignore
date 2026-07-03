@@ -1,4 +1,22 @@
-venv/\n__pycache__/\n*.pyc
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
-# Virtual Environments
+# Virtual environments
+venv/
 .venv/
+env/
+
+# Benchmark results are committed as evidence for the design-doc / blog numbers,
+# so they are NOT ignored. (If you want to keep scratch runs out of git, put them
+# under benchmarks/results/scratch/ and uncomment the next line.)
+# benchmarks/results/scratch/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
