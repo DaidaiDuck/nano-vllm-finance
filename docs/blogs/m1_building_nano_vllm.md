@@ -119,18 +119,32 @@ verified correct.
      Environment is fixed in design/benchmark_environment.md (A100 80GB SXM,
      Qwen2.5-3B bf16, PyTorch 2.4 / CUDA 12.4). Keep placeholders until then. -->
 
-> **TBD** — benchmarks not yet run. Environment:
-> [benchmark_environment.md](../design/benchmark_environment.md).
+Environment: A100 80GB SXM, Qwen2.5-3B bf16 (see
+[benchmark_environment.md](../design/benchmark_environment.md)). `Throughput` is
+output tokens/s.
 
-| Scenario | Throughput | P99 latency | TTFT | TPOT |
-|----------|-----------|-------------|------|------|
-| short_chat | — | — | — | — |
-| medium_chat | — | — | — | — |
-| long_context | — | — | — | — |
+| Scenario | Prompt | Output | Throughput | P99 latency | TTFT | TPOT |
+|----------|--------|--------|------------|-------------|------|------|
+| short_chat | ~125 | 100 | 29.4 tok/s | 3.62 s | 36 ms | 34.0 ms |
+| medium_chat | ~526 | 200 | 29.2 tok/s | 7.38 s | 38 ms | 34.2 ms |
+| long_context | ~1999 | 100 | 29.2 tok/s | 3.47 s | 89 ms | 33.7 ms |
 
-Expected qualitative shape (to confirm): TTFT grows ~linearly with prompt length
-(prefill is compute-bound); TPOT is roughly flat across scenarios (decode is
-memory-bandwidth-bound).
+**What the numbers say** (the theory, confirmed):
+
+- **Throughput is flat ~29 tok/s** — for a single request it's just decode speed
+  (≈ 1/TPOT), independent of prompt length.
+- **TPOT is ~34 ms everywhere** (125 → 2000 prompt tokens) — decode is
+  memory-bandwidth-bound; each step streams the weights, not the KV cache.
+- **TTFT tracks prompt length** (36 → 89 ms) — prefill is compute-bound, though a
+  ~35 ms fixed overhead hides it until prompts get long.
+- **Latency ≈ TTFT + output_len × TPOT** holds to <1%: wall-clock time is set by
+  how many tokens you *emit*, not how long the prompt is.
+
+<!-- TODO: turn into prose. Good place for a "latency = TTFT + N·TPOT" diagram.
+     Honest caveat: ~29 tok/s is a baseline (per-token cuda sync, no batching);
+     the DynamicCache torch.cat cost is still small at ≤2100 tokens — tease that
+     M2's length-sweep is where the O(n²) shows up. -->
+
 
 ## 10. What M1 deliberately leaves broken (→ M2)
 

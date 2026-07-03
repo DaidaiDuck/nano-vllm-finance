@@ -325,27 +325,52 @@ Reproduce with `bash scripts/run_tests.sh` (see [tests/README.md](../../tests/RE
 > [benchmark_environment.md](benchmark_environment.md) and shared across M1–M3
 > for comparability.
 
-> **TBD** — benchmarks not yet run. Numbers will be filled in after the M1
-> benchmark suite (`benchmarks/`) is executed.
+Environment: A100 80GB SXM, Qwen2.5-3B bf16, PyTorch 2.4 / CUDA 12.4
+(see [benchmark_environment.md](benchmark_environment.md)). Run
+`20260703_205705`.
 
 ### Benchmark data
 
-See [benchmark_environment.md](benchmark_environment.md) for the exact setup.
+`Throughput` is **output** tokens/s (the honest single-request decode metric —
+see note below). TTFT/TPOT are averages.
 
-| Scenario                  | Throughput | P99 Latency | TTFT | TPOT |
-|---------------------------|------------|-------------|------|------|
-| short_chat (~100 tok)     | —          | —           | —    | —    |
-| medium_chat (~200 tok)    | —          | —           | —    | —    |
-| long_context (~1000 tok)  | —          | —           | —    | —    |
+| Scenario | Prompt | Output | Throughput | P99 latency | TTFT | TPOT |
+|----------|--------|--------|------------|-------------|------|------|
+| short_chat | ~125 | 100 | 29.4 tok/s | 3.62 s | 36 ms | 34.0 ms |
+| medium_chat | ~526 | 200 | 29.2 tok/s | 7.38 s | 38 ms | 34.2 ms |
+| long_context | ~1999 | 100 | 29.2 tok/s | 3.47 s | 89 ms | 33.7 ms |
 
-Full report: [benchmarks/results/m1/report.md](../../benchmarks/results/m1/report.md)
+Raw results: [benchmarks/results/nano_vllm_m1_20260703_205705.json](../../benchmarks/results/nano_vllm_m1_20260703_205705.json)
 
-### Expected qualitative behavior (to be confirmed)
+### Observations (measured)
 
-1. **TTFT grows roughly linearly with prompt length** — prefill is compute-bound.
-2. **TPOT is stable across scenarios** — decode is memory-bandwidth-bound.
-3. **Throughput depends on the prompt:output ratio** under the shared throughput
-   definition.
+1. **Output throughput is flat (~29 tok/s) across all scenarios.** Single-request
+   throughput ≈ 1/TPOT ≈ 1/0.034 ≈ 29.4 — it is just decode speed, independent of
+   prompt length.
+2. **TPOT is stable (~34 ms) from 125 to ~2000 prompt tokens** — decode is
+   memory-bandwidth-bound. At 3B on an A100, each step is dominated by streaming
+   the model weights, not by attention over the KV cache, so context length barely
+   moves per-token cost.
+3. **TTFT grows with prompt length (36 → 38 → 89 ms)** — prefill is compute-bound.
+   But a fixed ~35 ms overhead dominates short prompts (125 → 526 barely changes);
+   only the ~2000-token prompt exposes real prefill compute. So TTFT ≈ fixed
+   overhead + prefill(n), not a clean line.
+4. **Latency ≈ TTFT + output_len × TPOT, confirmed to <1%.** End-to-end latency is
+   driven by **output length**, not prompt length: `long_context` (16× the prompt
+   of `short_chat`) has nearly identical latency because both emit 100 tokens.
+
+**Caveats (read before comparing to M2):**
+
+- `total_throughput` (66 / 106 / 613 tok/s) counts prefilled **input** tokens, so
+  it balloons for long prompts and is misleading for a single request. Use
+  `output_throughput`.
+- ~29 tok/s single-request is a **baseline, not a headline**: a per-token
+  `torch.cuda.synchronize()` (for accurate TPOT) adds fixed overhead, and there is
+  no batching. Real speedups come from the KV cache (M2) and batching (M4).
+- These scenarios are ≤~2100 tokens, where HF `DynamicCache`'s `torch.cat`
+  O(n²) cost is still small. **The M1→M2 win will be modest here** — the
+  length-sweep experiment (128→2048, [m2_design.md](m2_design.md) §7) is where the
+  quadratic cost actually shows up.
 
 ## 8. Known Limitations
 

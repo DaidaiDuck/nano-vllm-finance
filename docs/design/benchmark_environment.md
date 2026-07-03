@@ -35,11 +35,20 @@
 | OS | Ubuntu 22.04 |
 | Python | 3.11 |
 | PyTorch | 2.4.0 |
-| CUDA | 12.4.1 |
+| CUDA (toolkit, used by PyTorch) | 12.4.1 |
 | Model | Qwen/Qwen2.5-3B-Instruct |
 | dtype | bfloat16 |
-| transformers | <TODO: record `pip show transformers` version on the pod> |
-| Driver | <TODO: record `nvidia-smi` driver version on the pod> |
+| transformers | 5.13.0 |
+| NVIDIA driver | 580.126.20 |
+
+> `nvidia-smi` reports `CUDA Version: 13.0` — that is the **driver's max supported
+> CUDA**, not what PyTorch uses. The runtime toolkit is 12.4.1 (from the base
+> image); that is the version that matters for reproducibility.
+>
+> transformers is **5.x** (major version). M1 works with its `DynamicCache`, but
+> M2's plan to pass `MyKVCache` as `past_key_values` duck-types the HF `Cache`
+> interface — verify that interface against 5.13.0 when wiring M2
+> (see [m2_design.md](m2_design.md) §4 Decision 5).
 
 ## Measurement protocol
 
