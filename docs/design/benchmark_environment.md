@@ -15,9 +15,10 @@
 | Provider | RunPod (Secure Cloud) |
 | GPU | NVIDIA A100 80GB SXM (single) |
 | Memory bandwidth | ~2039 GB/s (HBM2e) |
-| Host RAM | 117 GB |
-| vCPU | 16 |
-| Disk | NVMe |
+| CPU | AMD EPYC 7742 |
+| vCPU | 32 |
+| Host RAM | 250 GB |
+| Disk | 20 GB (NVMe) |
 | ECC | off |
 | Clocks | locked (fixed SM/memory clocks for reproducibility) |
 | Interconnect | N/A (single GPU) |

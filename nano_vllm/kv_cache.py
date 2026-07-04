@@ -127,3 +127,10 @@ class MyKVCache:
     def reset(self):
         """重置 cache (新请求开始)"""
         self.current_len = 0
+
+    def get_mask_sizes(self, cache_position, layer_idx):
+        query_length = cache_position.shape[0] # 本次forward的新token数量
+        past_seen = self.get_seq_length(layer_idx) # 之前已经存的token数量 = current_len
+        kv_length = past_seen + query_length 
+        kv_offset = 0
+        return kv_length, kv_offset
