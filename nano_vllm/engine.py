@@ -7,31 +7,38 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm.sampler import Sampler
 from nano_vllm.types import SamplingParams, RequestOutput
 
-class SimpleEngine: 
+class SimpleEngine:
     """
-    M2 阶段的简单引擎: 单请求 generation
-    自定义KV Cache
+    单请求 generation 引擎.
+
+    use_custom_cache 选择 KV cache 后端, 用于 M1 vs M2 的公平对比:
+      True  (M2) -> 自研的预分配 MyKVCache
+      False (M1) -> HuggingFace 自带的 DynamicCache (torch.cat 增长)
     """
-    def __init__(self, model_name: str):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name) 
+    def __init__(self, model_name: str, use_custom_cache: bool = True):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
             device_map="cuda"
-        )  
+        )
         self.model.eval()
         self.sampler = Sampler()
-        config = self.model.config 
-        self.my_kv_cache = MyKVCache(
-            num_layers = config.num_hidden_layers, 
-            max_seq_len = 4096, 
-            num_kv_heads = config.num_key_value_heads, 
-            head_dim = getattr(
-                config, "head_dim", config.hidden_size // config.num_attention_heads # Must use integer division //.
-            ),
-            dtype=self.model.dtype, 
-            device=self.model.device,
-        )
+        self.use_custom_cache = use_custom_cache
+        if use_custom_cache:
+            config = self.model.config
+            self.my_kv_cache = MyKVCache(
+                num_layers = config.num_hidden_layers,
+                max_seq_len = 8192,
+                num_kv_heads = config.num_key_value_heads,
+                head_dim = getattr(
+                    config, "head_dim", config.hidden_size // config.num_attention_heads # Must use integer division //.
+                ),
+                dtype=self.model.dtype,
+                device=self.model.device,
+            )
+        else:
+            self.my_kv_cache = None  # M1 mode: HF creates its own DynamicCache
 
     def _format_prompt(self, prompt: str) -> str:
         """套上 chat template, 返回真正喂给模型的字符串。"""
@@ -57,8 +64,14 @@ class SimpleEngine:
     ) -> RequestOutput:
         """生成一个请求的输出"""
 
-        # Reset KV Cache
-        self.my_kv_cache.reset()
+        # Select KV cache backend: custom MyKVCache (M2) or HF DynamicCache (M1).
+        # M2: reset our pre-allocated cache and hand it to the model.
+        # M1: pass None so HF creates a DynamicCache, then re-read it each step.
+        if self.use_custom_cache:
+            self.my_kv_cache.reset()
+            past_key_values = self.my_kv_cache
+        else:
+            past_key_values = None
 
         # Apply chat template (see count_prompt_tokens / _format_prompt)
         text = self._format_prompt(prompt)
@@ -68,16 +81,18 @@ class SimpleEngine:
         with torch.no_grad():
             outputs = self.model(
                 input_ids = input_ids,
-                past_key_values = self.my_kv_cache,
+                past_key_values = past_key_values,
                 use_cache = True,
             )
-        
-        # Sample next token 
+        if not self.use_custom_cache:
+            past_key_values = outputs.past_key_values
+
+        # Sample next token
         logits = outputs.logits[0,-1,:]
         next_token = self.sampler.sample(logits, params)
-        output_ids = [next_token] 
+        output_ids = [next_token]
 
-        # Decode loop 
+        # Decode loop
         finished_reason = "length"
         finished = True
         for _ in range(params.max_tokens - 1):
@@ -88,13 +103,15 @@ class SimpleEngine:
             with torch.no_grad():
                 outputs = self.model(
                     input_ids = torch.tensor([[next_token]], device="cuda"), # 转化成[batch_size,seq_len]
-                    past_key_values = self.my_kv_cache,
-                    use_cache=True 
+                    past_key_values = past_key_values,
+                    use_cache=True
                 )
-            logits = outputs.logits[0, -1, :] 
-            next_token = self.sampler.sample(logits, params) 
-            output_ids.append(next_token) 
-        
+            if not self.use_custom_cache:
+                past_key_values = outputs.past_key_values
+            logits = outputs.logits[0, -1, :]
+            next_token = self.sampler.sample(logits, params)
+            output_ids.append(next_token)
+
         # Decode
         text = self.tokenizer.decode(output_ids)
 
@@ -129,8 +146,12 @@ class SimpleEngine:
             ttft = first_token_time - start 
         """
 
-        # Reset KV Cache
-        self.my_kv_cache.reset() 
+        # Select KV cache backend (see generate() for the M1/M2 rationale).
+        if self.use_custom_cache:
+            self.my_kv_cache.reset()
+            past_key_values = self.my_kv_cache
+        else:
+            past_key_values = None
 
         # Apply chat template.
         # Why apply_chat_template instead of encode(messages):
@@ -156,9 +177,11 @@ class SimpleEngine:
         with torch.no_grad():
             outputs = self.model(
                 input_ids=input_ids,
-                past_key_values=self.my_kv_cache,
+                past_key_values=past_key_values,
                 use_cache=True,
             )
+        if not self.use_custom_cache:
+            past_key_values = outputs.past_key_values
         # logits shape is [batch, seq_len, vocab_size].
         #   0  -> first (and only) sequence in the batch
         #   -1 -> the last position; the model emits a next-token distribution for
@@ -187,10 +210,12 @@ class SimpleEngine:
             with torch.no_grad():
                 outputs = self.model(
                     input_ids = inp,
-                    past_key_values = self.my_kv_cache,
+                    past_key_values = past_key_values,
                     use_cache=True,
                 )
-                logits = outputs.logits[0,-1,:] 
+                if not self.use_custom_cache:
+                    past_key_values = outputs.past_key_values
+                logits = outputs.logits[0,-1,:]
                 next_token = self.sampler.sample(logits, params)
 
                 torch.cuda.synchronize()
@@ -204,8 +229,8 @@ class LLM:
     """
     用户入口
     """
-    def __init__(self, model: str):
-        self.engine = SimpleEngine(model)
+    def __init__(self, model: str, use_custom_cache: bool = True):
+        self.engine = SimpleEngine(model, use_custom_cache=use_custom_cache)
         self.counter = 0
 
     def generate(
