@@ -1,56 +1,83 @@
 # nano-vllm-finance
 
-> A production-grade LLM inference engine built from scratch, 
-> optimized for quantitative trading scenarios.
+> A from-scratch LLM inference engine, rebuilt milestone by milestone to
+> understand and reconstruct the core ideas behind vLLM — with an eye toward
+> low-latency quantitative-trading workloads.
 
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org)
+[![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org)
+
+## Status
+
+🚧 **In progress.** **M1 (single-request baseline) is complete**: a correct
+prefill + decode engine on top of HuggingFace, a custom sampler, and token-level
+streaming. Greedy output matches HuggingFace **token-for-token**, 23/23 tests pass,
+and it is benchmarked on an A100. M2–M6 are the roadmap below.
 
 ## Overview
 
-nano-vllm-finance is a from-scratch LLM inference engine designed for low-latency
-quantitative trading workloads. Key differentiators:
+nano-vllm-finance reconstructs a vLLM-style inference engine from scratch, one
+optimization at a time, benchmarking at every step so each improvement is measured
+against the previous milestone. The advanced pieces are **goals on the roadmap, not
+yet built**:
 
-- **Custom PagedAttention**: ~85% performance of vLLM
-- **Triton Attention Kernel**: ~80% of FlashAttention-2
-- **Persistent System Prompt Cache**: 5x P99 latency reduction
-- **Quant-First Design**: Optimized for fixed system prompt + short query patterns
+- **Custom KV cache** — replace HF's `DynamicCache` with a pre-allocated buffer (M2)
+- **PagedAttention** — block-based KV cache + paged kernel (M3)
+- **Continuous batching** — concurrent requests (M4)
+- **Quant specialization** — fixed system prompt + short query patterns (M5)
+- **HTTP serving** (M6)
 
-## Performance
+## Milestones
 
-| Scenario | Throughput | P99 Latency | vs vLLM |
-|----------|-----------|-------------|---------|
-| Quant typical | XXX tok/s | XXX ms | 0.85x |
-| Long context | XXX tok/s | XXX ms | 1.10x |
+| Milestone | Feature | Status | Tag | Design | Blog |
+|-----------|---------|--------|-----|--------|------|
+| M1 | Single-request engine (prefill + decode) | ✅ Done | [m1](https://github.com/DaidaiDuck/nano-vllm-finance/tree/m1) | [design](docs/design/m1_design.md) | [EN](docs/blogs/m1_building_nano_vllm.md) · [中文](docs/blogs/m1_building_nano_vllm.zh.md) |
+| M2 | Custom KV cache | 🚧 In progress | — | [design](docs/design/m2_design.md) | — |
+| M3 | PagedAttention | ⬜ Planned | — | — | — |
+| M4 | Continuous batching | ⬜ Planned | — | — | — |
+| M5 | Quant specialization | ⬜ Planned | — | — | — |
+| M6 | HTTP service | ⬜ Planned | — | — | — |
 
-[Full benchmark report](benchmarks/results/final/)
+To explore a completed milestone: `git checkout m1`.
 
-## Architecture
+## M1 benchmark (baseline)
 
-[architecture diagram]
+Single request, A100 80GB SXM, Qwen2.5-3B bf16 — full setup in
+[benchmark_environment.md](docs/design/benchmark_environment.md). `Throughput` is
+output tokens/s.
 
-See [architecture.md](docs/architecture.md) for details.
+| Scenario | Prompt | Output | Throughput | P99 latency | TTFT | TPOT |
+|----------|--------|--------|------------|-------------|------|------|
+| short_chat | ~125 | 100 | 29.4 tok/s | 3.62 s | 36 ms | 34.0 ms |
+| medium_chat | ~526 | 200 | 29.2 tok/s | 7.38 s | 38 ms | 34.2 ms |
+| long_context | ~1999 | 100 | 29.2 tok/s | 3.47 s | 89 ms | 33.7 ms |
 
-## Quick Start
+End-to-end latency follows `latency ≈ TTFT + output_len × TPOT` (verified to <1%),
+cleanly separating compute-bound prefill (TTFT) from memory-bound decode (TPOT).
+
+## Quick start
 
 ```bash
 pip install -e .
-python examples/basic_generate.py
+
+# run the tests (CPU tests always; GPU integration on a CUDA machine)
+bash scripts/run_tests.sh
+
+# run the M1 benchmark (from the repo root, as a module)
+python -m benchmarks.m1_benchmark --version m1 \
+    --model Qwen/Qwen2.5-3B-Instruct \
+    --scenarios short_chat medium_chat long_context
 ```
 
-## Development History
+See [tests/README.md](tests/README.md) and [benchmarks/README.md](benchmarks/README.md)
+for details.
 
-This project was developed iteratively across 6 milestones:
+## Project structure
 
-| Milestone | Feature | Tag | Blog |
-|-----------|---------|-----|------|
-| M1 | Single-request inference | [m1](https://github.com/you/repo/tree/m1) | [Blog 1](https://...) |
-| M2 | Custom KV cache | [m2](https://github.com/you/repo/tree/m2) | [Blog 2](https://...) |
-| M3 | PagedAttention | [m3](https://github.com/you/repo/tree/m3) | [Blog 3](https://...) |
-| M4 | Continuous Batching | [m4](https://github.com/you/repo/tree/m4) | [Blog 4](https://...) |
-| M5 | Quant specialization | [m5](https://github.com/you/repo/tree/m5) | [Blog 5](https://...) |
-| M6 | HTTP service | [m6](https://github.com/you/repo/tree/m6) | [Blog 6](https://...) |
-
-To explore any version: `git checkout m{N}`
-
-## Project Structure
+```
+nano_vllm/       core engine — engine, sampler, types (and kv_cache for M2)
+benchmarks/      benchmark harness + results
+tests/           unit (CPU) + integration (GPU) tests
+docs/design/     per-milestone design docs + benchmark_environment.md
+docs/blogs/      milestone write-ups (EN / 中文)
+scripts/         run_tests.sh and other helpers
+```
