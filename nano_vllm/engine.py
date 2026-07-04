@@ -1,6 +1,7 @@
 # nano_vllm/engine.py
 from typing import Iterator
 
+from nano_vllm.kv_cache import MyKVCache
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm.sampler import Sampler
@@ -8,8 +9,8 @@ from nano_vllm.types import SamplingParams, RequestOutput
 
 class SimpleEngine: 
     """
-    M1 阶段的简单引擎: 单请求 generation
-    用 HF 自带的 KV cache
+    M2 阶段的简单引擎: 单请求 generation
+    自定义KV Cache
     """
     def __init__(self, model_name: str):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name) 
@@ -20,6 +21,17 @@ class SimpleEngine:
         )  
         self.model.eval()
         self.sampler = Sampler()
+        config = self.model.config 
+        self.my_kv_cache = MyKVCache(
+            num_layers = config.num_hidden_layers, 
+            max_seq_len = 4096, 
+            num_kv_heads = config.num_key_value_heads, 
+            head_dim = getattr(
+                config, "head_dim", config.hidden_size // config.num_attention_heads # Must use integer division //.
+            ),
+            dtype=self.model.dtype, 
+            device=self.model.device,
+        )
 
     def _format_prompt(self, prompt: str) -> str:
         """套上 chat template, 返回真正喂给模型的字符串。"""
@@ -45,6 +57,9 @@ class SimpleEngine:
     ) -> RequestOutput:
         """生成一个请求的输出"""
 
+        # Reset KV Cache
+        self.my_kv_cache.reset()
+
         # Apply chat template (see count_prompt_tokens / _format_prompt)
         text = self._format_prompt(prompt)
         input_ids = self.tokenizer.encode(text, return_tensors="pt").to("cuda")
@@ -53,9 +68,9 @@ class SimpleEngine:
         with torch.no_grad():
             outputs = self.model(
                 input_ids = input_ids,
-                use_cache=True 
+                past_key_values = self.my_kv_cache,
+                use_cache = True,
             )
-        past_key_values = outputs.past_key_values
         
         # Sample next token 
         logits = outputs.logits[0,-1,:]
@@ -73,10 +88,9 @@ class SimpleEngine:
             with torch.no_grad():
                 outputs = self.model(
                     input_ids = torch.tensor([[next_token]], device="cuda"), # 转化成[batch_size,seq_len]
-                    past_key_values = past_key_values,
+                    past_key_values = self.my_kv_cache,
                     use_cache=True 
                 )
-            past_key_values = outputs.past_key_values
             logits = outputs.logits[0, -1, :] 
             next_token = self.sampler.sample(logits, params) 
             output_ids.append(next_token) 
@@ -114,6 +128,10 @@ class SimpleEngine:
                     first_token_time = time.perf_counter()
             ttft = first_token_time - start 
         """
+
+        # Reset KV Cache
+        self.my_kv_cache.reset() 
+
         # Apply chat template.
         # Why apply_chat_template instead of encode(messages):
         #   instruct models are trained on a specific conversation format with
@@ -138,9 +156,9 @@ class SimpleEngine:
         with torch.no_grad():
             outputs = self.model(
                 input_ids=input_ids,
+                past_key_values=self.my_kv_cache,
                 use_cache=True,
             )
-        past_key_values = outputs.past_key_values
         # logits shape is [batch, seq_len, vocab_size].
         #   0  -> first (and only) sequence in the batch
         #   -1 -> the last position; the model emits a next-token distribution for
@@ -169,19 +187,15 @@ class SimpleEngine:
             with torch.no_grad():
                 outputs = self.model(
                     input_ids = inp,
-                    past_key_values = past_key_values,
+                    past_key_values = self.my_kv_cache,
                     use_cache=True,
                 )
-                past_key_values = outputs.past_key_values
                 logits = outputs.logits[0,-1,:] 
                 next_token = self.sampler.sample(logits, params)
 
                 torch.cuda.synchronize()
                 yield next_token
         
-
-
-
 
 
 
