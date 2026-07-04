@@ -1,5 +1,5 @@
-torch>=2.2.0
-transformers>=4.40.0
+torch>=2.2.0                 # provided by the RunPod base image (2.4.0+cu124); do not pin exact
+transformers==5.13.0        # Cache API is version-sensitive; pinned to match benchmark_environment.md
 tokenizers>=0.19.0
 accelerate>=0.29.0
 numpy>=1.26.0

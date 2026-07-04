@@ -3,7 +3,7 @@ name = "nano-vllm-finance"
 version = "0.0.1"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.1",
-    "transformers>=4.40",
+    "torch>=2.1",            # provided by the RunPod base image (2.4.0+cu124); do not pin exact
+    "transformers==5.13.0",  # Cache API is version-sensitive; pinned to match benchmark_environment.md
     "accelerate",
 ]
