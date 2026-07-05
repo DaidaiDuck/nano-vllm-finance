@@ -31,7 +31,7 @@ yet built**:
 | Milestone | Feature | Status | Tag | Design | Blog |
 |-----------|---------|--------|-----|--------|------|
 | M1 | Single-request engine (prefill + decode) | ✅ Done | [m1](https://github.com/DaidaiDuck/nano-vllm-finance/tree/m1) | [design](docs/design/m1_design.md) | [EN](docs/blogs/m1_building_nano_vllm.md) · [中文](docs/blogs/m1_building_nano_vllm.zh.md) |
-| M2 | Custom KV cache | 🚧 In progress | — | [design](docs/design/m2_design.md) | — |
+| M2 | Custom KV cache | ✅ Done | [m2](https://github.com/DaidaiDuck/nano-vllm-finance/tree/m2) | [design](docs/design/m2_design.md) | [EN](docs/blogs/m2_custom_kv_cache.md) · [中文](docs/blogs/m2_custom_kv_cache.zh.md) |
 | M3 | PagedAttention | ⬜ Planned | — | — | — |
 | M4 | Continuous batching | ⬜ Planned | — | — | — |
 | M5 | Quant specialization | ⬜ Planned | — | — | — |
@@ -57,7 +57,10 @@ cleanly separating compute-bound prefill (TTFT) from memory-bound decode (TPOT).
 ## Quick start
 
 ```bash
-pip install -e .
+cd nano-vllm-finance
+pip install -e .                    # ① 项目+ 运行依赖(transformers==5.13.0)
+pip install -r requirements.txt     # ② 补 dev 工具(pytest 等,跑测试要)
+pip show transformers               # 确认 5.13.0
 
 # run the tests (CPU tests always; GPU integration on a CUDA machine)
 bash scripts/run_tests.sh

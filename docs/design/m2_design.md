@@ -359,14 +359,36 @@ Fragmentation (`inactive_split`, `num_alloc_retries`) barely moves at single req
 and is an **M4** phenomenon — do not build the M2 story on it. See
 [benchmarks/README.md](../../benchmarks/README.md) for the exact commands.
 
-### Results (pending run)
+### Results (A100 80GB SXM, Qwen2.5-3B bf16)
 
 | Check | Result |
 |-------|--------|
-| Correctness (test_m1_vs_hf, 3B) | ✅ 3/3 pass |
-| Parity M1 vs M2 (short/medium/long) | TBD |
-| Peak memory M2 vs M1 (expect M2 ≥ M1) | TBD |
-| cache_microbench: per-step DynamicCache vs MyKVCache | TBD |
+| Correctness (test_m1_vs_hf, 3B) | ✅ 3/3 pass (token-for-token) |
+| Parity M1 vs M2 (short/medium/long) | ❌ M2 is **~6% slower** (TPOT 34.6→36.8 ms; throughput ↓5.8–6.1% across all three) |
+| Peak memory M2 vs M1 | M2 **higher by ~220–300 MB** (pre-reserves `max_seq_len`; e.g. long_context 6953→7174 MB) — expected tradeoff |
+| cache_microbench (op only, model removed) | MyKVCache **~3.8× slower** per step (~3260 vs ~860 µs); total 13.3 s vs 4.6 s |
+
+**Interpretation — the O(n²) win does not materialize at single request, and M2 is
+in fact slower:**
+
+- **`torch.cat` is O(n) but negligible here.** With cold-start removed (warmup),
+  DynamicCache's per-step time rises only gently (803 → 880 µs over seq 33→4128,
+  ~77 µs). The copy grows, but it is dwarfed by a ~800 µs fixed floor (36 layers ×
+  kernel-launch + alloc). O(n²) needs tens of thousands of tokens to dominate —
+  unreachable in practice. **The `torch.cat` cost is widely overestimated.**
+- **MyKVCache is slower because of kernel count, not bytes.** Its seq-major layout
+  forces `transpose → contiguous` (write) + slice-write + `contiguous` (read) per
+  layer — ~6 copy kernels for K+V vs DynamicCache's 2 (`cat` K + V). At ~10–15 µs
+  fixed launch overhead each, 3× the kernels → ~3.8× the time. The extra ~2400 µs
+  of cache work per step ≈ the ~6% end-to-end TPOT regression.
+- **Why M2 still matters:** owning the cache is the prerequisite for M3
+  (PagedAttention) and M4 (batching). The transpose overhead disappears once M3's
+  paged kernel consumes the seq-major layout directly. M2 is "pay the tax now,
+  refund at M3."
+
+Raw data:
+[benchmarks/results/](../../benchmarks/results/) — `nano_vllm_m1_rerun_*.json`,
+`nano_vllm_m2_*.json`, `cache_microbench.json`.
 
 ## 8. Known Limitations
 
