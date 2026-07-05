@@ -1,6 +1,7 @@
 # M2 Design: Custom Pre-allocated KV Cache (`MyKVCache`)
 
-> **Status**: In progress (2025-XX-XX)
+> **Status**: Correctness validated (MyKVCache == HF token-for-token on 3B);
+> benchmarks pending.
 > **Tag**: [m2](https://github.com/DaidaiDuck/nano-vllm-finance/tree/m2)
 > **Blog**: [Building nano-vllm Part 2](https://...)
 
@@ -13,8 +14,11 @@ by `torch.cat` on every decode step, causing allocator jitter and O(n²) copy
 traffic over a sequence (see [m1_design.md](m1_design.md) §4 Decision 1).
 
 The generation loop, sampler, streaming interface, and public `LLM` API stay
-unchanged. **Correctness is non-negotiable: greedy output must remain bit-for-bit
-identical to M1.** The win is purely in memory behavior and per-step decode cost.
+unchanged. **Correctness is non-negotiable: greedy output must remain identical to
+M1** (validated token-for-token vs HF on 3B, §6). At single request there is **no
+measurable end-to-end speedup** — the `torch.cat` cost is ~0.2 % of a decode step
+(§7). M2's real value is architectural: owning the cache is the prerequisite for M3
+(PagedAttention) and M4 (batching), where the O(n²) growth actually matters.
 
 Core implementation:
 
@@ -182,12 +186,24 @@ be passed as `past_key_values` directly.
 - Keeps the M1→M2 diff confined to the cache class plus a few lines of engine
   wiring.
 
-**Integration risk to watch**: different `transformers` versions may call extra
-cache methods (e.g. `get_usable_length`, the `seen_tokens` property, or
-`reorder_cache`). If the pinned version requires them, add thin shims to
-`MyKVCache`. This is the most likely source of integration breakage and should be
-verified against the exact `transformers` version in
-[benchmark_environment.md](benchmark_environment.md).
+**Integration risk — and what actually happened on transformers 5.13.0.** The
+risk materialized: the model's mask construction
+(`masking_utils.create_causal_mask` → `_preprocess_mask_arguments`) calls
+`past_key_values.get_mask_sizes(query_length, layer_idx)`, which `MyKVCache` did
+not have. The fix was a **one-line shim** mirroring `DynamicLayer.get_mask_sizes`:
+
+```python
+def get_mask_sizes(self, query_length, layer_idx):
+    kv_length = self.get_seq_length(layer_idx) + query_length  # past + new tokens
+    kv_offset = 0                                              # 0 for a full cache
+    return kv_length, kv_offset
+```
+
+Note `query_length` arrives as an **int** in 5.13.0 (not a `cache_position`
+tensor — the signature differs across versions, so mirror the installed
+`DynamicLayer.get_mask_sizes` source). This was the *only* extra method needed;
+no `get_usable_length` / `seen_tokens` / `reorder_cache` were required. Each such
+shim just describes the cache to HF; it does not change how K/V are stored.
 
 ## 5. Implementation Details
 
@@ -231,11 +247,12 @@ def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
 
 Full implementation: [nano_vllm/kv_cache.py](../../nano_vllm/kv_cache.py).
 
-### Engine integration (pending work)
+### Engine integration (done)
 
-`generate_stream()` / `generate()` in [nano_vllm/engine.py](../../nano_vllm/engine.py)
-currently rely on HF's default cache (`past_key_values = outputs.past_key_values`
-re-read each step). M2 replaces this with a persistent `MyKVCache` instance:
+`generate()` and `generate_stream()` in [nano_vllm/engine.py](../../nano_vllm/engine.py)
+now use a persistent `MyKVCache` instance. A `use_custom_cache` flag on
+`SimpleEngine` / `LLM` selects the backend (`True` → MyKVCache, `False` → HF
+DynamicCache) so both can be A/B-benchmarked through one harness:
 
 ```python
 # Build once from the model config
@@ -277,123 +294,79 @@ when available** (no model needed). Covers:
 - dtype / device / contiguity of returned tensors
 - **Equivalence with HF `DynamicCache`** (shape + values, prefill and decode)
 
-### Non-regression: M2 vs M1 (most important)
+### Non-regression: MyKVCache == HF — VALIDATED ✅
 
-Greedy output must be **byte-for-byte identical to M1** (which is in turn identical
-to HF). This is the M1 correctness contract, now applied across the cache swap:
+`test_m1_vs_hf` (greedy, token-for-token vs HuggingFace) **passes 3/3 with
+`MyKVCache` on Qwen2.5-3B-Instruct** (the benchmark model, A100 80GB SXM,
+transformers 5.13.0). The custom cache is a verified drop-in for `DynamicCache`.
 
-```python
-def test_m2_greedy_matches_m1():
-    params = SamplingParams(temperature=0.0, max_tokens=32)
-    for prompt in test_prompts:
-        assert m2_llm.generate(prompt, params)[0].text == m1_reference[prompt]
-```
+Two findings worth recording:
+
+1. **`get_mask_sizes` was the only interface method that had to be added** to
+   satisfy transformers 5.13.0 (see §4 Decision 5). Once added, all cache unit
+   tests + the HF-equivalence test pass.
+2. **On the small 0.5B model the test can diverge** — but `use_custom_cache=True`
+   (MyKVCache) and `=False` (DynamicCache) produce **byte-identical** output, so
+   the divergence is nano's manual loop vs HF `generate()` numerical noise
+   (greedy argmax flips on a close call), **not a cache bug**. It disappears on
+   3B where the argmax margins are larger. The cleanest M2-specific assertion is
+   therefore "MyKVCache output == DynamicCache output", which holds on every model.
 
 ### Streaming consistency
 
 `list(llm.generate_stream(prompt, params)) == llm.generate(prompt, params)[0].token_ids`
-must still hold after the swap.
+must still hold after the swap (both paths now use MyKVCache).
 
 > Integration tests requiring a real model + CUDA stay gated behind
-> `NANO_VLLM_INTEGRATION=1` (see M1 doc §6).
+> `NANO_VLLM_INTEGRATION=1`. Run the HF-equivalence check on the 3B model:
+> `NANO_VLLM_INTEGRATION=1 NANO_VLLM_TEST_MODEL=Qwen/Qwen2.5-3B-Instruct python -m pytest tests/test_m1_vs_hf.py -v`
 
 ## 7. Performance Characteristics — M1 vs M2
 
 > Hardware, software, scenarios, and metric definitions are specified once in
 > [benchmark_environment.md](benchmark_environment.md) and shared across M1–M3.
 
-> **TBD** — M2 benchmarks not yet run. All cells below are placeholders to be
-> filled after the M2 suite executes on GPU, using the **same** environment as M1.
+> **TBD** — numbers pending. But note the reframing below: at single request,
+> **M2 has no measurable end-to-end speedup**, and the benchmark's job is to
+> confirm that honestly, not to manufacture a win.
 
-### Benchmark methodology — surfacing O(n²) vs O(n)
+### The honest single-request story (why there is no TPOT win)
 
-The default scenarios (fixed output lengths) **under-show** the effect: the
-asymptotic gap only opens up as the *generated sequence* grows. The whole
-M1-vs-M2 difference lives on the **decode length axis**, so the experiments must
-sweep it. Both engines run the identical harness on the same GPU (warmup, locked
-clocks, fixed seed per [benchmark_environment.md](benchmark_environment.md)); the
-only variable is the cache backend (`DynamicCache` vs `MyKVCache`).
+An earlier draft of this section expected M1's TPOT to rise with output length
+(O(n²) copy). **The M1 data disproves that**: TPOT is flat ~34 ms across 125 → 2000
+prompt tokens (see [m1_design.md](m1_design.md) §7), because the `torch.cat` copy at
+2000 tokens is ~75 MB ≈ 75 µs — only **~0.2 % of a 34 ms decode step** that is
+dominated by streaming the model's weights. Doubling to 4096 tokens still leaves it
+at ~0.4 %. You would need tens of thousands of tokens (impractical: ~1 min/token-
+batch) to make it visible. So at single request, **M2 ≈ M1 on latency/TPOT**, and
+M2 actually uses **more** peak memory (it pre-reserves `max_seq_len`). M2's payoff
+is architectural — it is the prerequisite for M3 (PagedAttention) and M4 (batching),
+where the O(n²) + allocator churn actually bite.
 
-**Experiment 1 — Output-length sweep (asymptotics).**
-Fix a short prompt (~32 tok); vary `max_tokens` over {128, 256, 512, 1024, 2048}
-with greedy decoding. Record avg TPOT, total decode time, and peak memory per
-length.
-- Expected M1: per-step cost rises with length → avg **TPOT grows ∝ n**, total
-  decode time **∝ n²**.
-- Expected M2: avg **TPOT flat** → total decode time **∝ n**.
-- The headline plot: *total decode time vs output length* — M1 curves upward
-  (quadratic), M2 is a straight line.
+### What the M2 benchmark therefore measures
 
-**Experiment 2 — Inter-token latency trace (the smoking gun).**
-One long generation (e.g. 1024 tok); record the timestamp of **every** yielded
-token (`generate_stream` already exposes this) → plot inter-token latency vs token
-index.
-- Expected M1: an upward-sloping line (later tokens cost more) with **sawtooth**
-  spikes from reallocation.
-- Expected M2: a **flat** line.
-- This single plot is the clearest visualization of O(n²) vs O(n) and of the
-  memory jitter.
+1. **Correctness** — `MyKVCache` output == HF, token-for-token (§6, validated ✅).
+2. **Parity** — M2 latency/throughput ≈ M1 (no regression). Run both backends
+   through one harness via `--cache {hf,custom}` in
+   [m2_benchmark.py](../../benchmarks/m2_benchmark.py); compare with `--baseline`.
+3. **The O(n²)→O(n) structural win, shown honestly** — decoupled from the model in
+   [cache_microbench.py](../../benchmarks/cache_microbench.py): timing
+   `DynamicCache.update` vs `MyKVCache.update` alone, the per-step cost rises for
+   DynamicCache and stays flat for MyKVCache. Pair it with the note that this does
+   **not** move end-to-end TPOT.
 
-**Experiment 3 — Memory trace (optional).**
-Sample `torch.cuda.memory_allocated()` each decode step.
-- Expected M1: staircase growth + jitter. M2: flat at the pre-allocated size.
-- **Honest caveat**: for short sequences M2's flat line sits *above* M1's (it
-  reserves `max_seq_len`). M2's single-request memory advantage is
-  **stability/predictability**, not lower peak; the raw-peak win comes later when
-  many requests are packed (M4). M2's unambiguous single-request win is **speed**
-  (TPOT on long sequences).
+Fragmentation (`inactive_split`, `num_alloc_retries`) barely moves at single request
+and is an **M4** phenomenon — do not build the M2 story on it. See
+[benchmarks/README.md](../../benchmarks/README.md) for the exact commands.
 
-**Harness changes required (deferred to M2 — not part of M1 work):**
-- A cache-backend switch so one harness runs both `DynamicCache` and `MyKVCache`.
-- Per-token timestamp capture in the runner (full inter-token curve, not just TTFT).
-- `peak_memory_mb` via `torch.cuda.max_memory_allocated()` (the Table B prerequisite).
-- Optional per-step memory sampling for Experiment 3.
+### Results (pending run)
 
-### Table A — Latency & throughput (M1 → M2)
-
-| Scenario | Metric | M1 | M2 | Δ% |
-|----------|--------|----|----|----|
-| short_chat (~100 tok) | Throughput (tok/s) | — | — | — |
-| short_chat | P99 latency (s) | — | — | — |
-| short_chat | TTFT (s) | — | — | — |
-| short_chat | TPOT (ms) | — | — | — |
-| medium_chat (~200 tok) | Throughput (tok/s) | — | — | — |
-| medium_chat | P99 latency (s) | — | — | — |
-| medium_chat | TTFT (s) | — | — | — |
-| medium_chat | TPOT (ms) | — | — | — |
-| long_context (~1000 tok) | Throughput (tok/s) | — | — | — |
-| long_context | P99 latency (s) | — | — | — |
-| long_context | TTFT (s) | — | — | — |
-| long_context | TPOT (ms) | — | — | — |
-
-### Table B — Memory efficiency (the M2 headline)
-
-Peak GPU memory via `torch.cuda.max_memory_allocated()`, per scenario.
-
-| Scenario | M1 peak mem (MB) | M2 peak mem (MB) | Δ% | Notes |
-|----------|------------------|------------------|----|-------|
-| short_chat (~100 tok) | — | — | — | |
-| medium_chat (~200 tok) | — | — | — | |
-| long_context (~1000 tok) | — | — | — | M1 `torch.cat` growth most visible here |
-
-Full report: [benchmarks/results/m2/report.md](../../benchmarks/results/m2/report.md)
-
-### Expected qualitative results (to confirm)
-
-1. **TPOT improves most on long sequences** — O(n²)→O(n) copy traffic; the longer
-   the sequence, the bigger the M2 win.
-2. **Peak memory is flat and non-jittering** — pre-allocation removes per-step
-   alloc/free; M2 may use *more* memory for short sequences (reserves
-   `max_seq_len`) but avoids M1's growth spikes on long ones.
-3. **TTFT ≈ unchanged** — prefill is compute-bound and dominated by the same
-   forward pass.
-4. **Greedy output identical** — the non-regression contract.
-
-> **Dependency for Table B**: `ScenarioMetrics` in
-> [benchmarks/metrics.py](../../benchmarks/metrics.py) has **no memory field
-> today**. Recording peak memory requires adding one (e.g. `peak_memory_mb`) and
-> capturing `torch.cuda.max_memory_allocated()` in the runner. This is a
-> prerequisite to filling Table B and is tracked as follow-up work.
+| Check | Result |
+|-------|--------|
+| Correctness (test_m1_vs_hf, 3B) | ✅ 3/3 pass |
+| Parity M1 vs M2 (short/medium/long) | TBD |
+| Peak memory M2 vs M1 (expect M2 ≥ M1) | TBD |
+| cache_microbench: per-step DynamicCache vs MyKVCache | TBD |
 
 ## 8. Known Limitations
 

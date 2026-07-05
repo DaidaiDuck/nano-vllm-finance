@@ -37,17 +37,29 @@ def _time_decode(make_cache, num_layers, num_kv_heads, head_dim, device, dtype,
     A "step" writes one new token to every layer (num_layers cache.update calls),
     which is exactly what one decode step of the real engine does.
     """
-    cache = make_cache()
-
-    # Prefill: write prefill_len tokens to every layer.
     k_pre = _kv(num_kv_heads, prefill_len, head_dim, device, dtype)
+    # Reuse one 1-token tensor for every decode step (update copies it, never mutates).
+    k1 = _kv(num_kv_heads, 1, head_dim, device, dtype)
+
+    # Warmup on a THROWAWAY cache: the CUDA kernel cache and caching allocator are
+    # process-global, so heating them here means the first *timed* step below isn't
+    # inflated by one-time cold-start costs (kernel JIT + first cudaMalloc).
+    warmup = make_cache()
+    for i in range(num_layers):
+        warmup.update(k_pre, k_pre, i)
+    for _ in range(5):
+        for i in range(num_layers):
+            warmup.update(k1, k1, i)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    del warmup
+
+    # The real, timed cache — starts fresh so seq_len labels begin at prefill_len+1.
+    cache = make_cache()
     for i in range(num_layers):
         cache.update(k_pre, k_pre, i)
     if device == "cuda":
         torch.cuda.synchronize()
-
-    # Reuse one 1-token tensor for every decode step (update copies it, never mutates).
-    k1 = _kv(num_kv_heads, 1, head_dim, device, dtype)
 
     per_step_us = {}          # seq_len -> microseconds for that decode step (all layers)
     total_start = time.perf_counter()
@@ -130,8 +142,12 @@ def main():
     for n in names:
         print(f"  {n:<14} {results[n]['total_s']:.3f} s")
     if "DynamicCache" in results and "MyKVCache" in results:
-        ratio = results["DynamicCache"]["total_s"] / max(results["MyKVCache"]["total_s"], 1e-9)
-        print(f"  MyKVCache is {ratio:.1f}x faster on the cache op alone")
+        d = results["DynamicCache"]["total_s"]
+        m = results["MyKVCache"]["total_s"]
+        if m <= d:
+            print(f"  MyKVCache is {d / max(m, 1e-9):.1f}x FASTER on the cache op alone")
+        else:
+            print(f"  MyKVCache is {m / max(d, 1e-9):.1f}x SLOWER on the cache op alone")
 
     out = "benchmarks/results/cache_microbench.json"
     with open(out, "w") as f:

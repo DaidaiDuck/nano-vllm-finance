@@ -46,10 +46,10 @@
 > CUDA**, not what PyTorch uses. The runtime toolkit is 12.4.1 (from the base
 > image); that is the version that matters for reproducibility.
 >
-> transformers is **5.x** (major version). M1 works with its `DynamicCache`, but
-> M2's plan to pass `MyKVCache` as `past_key_values` duck-types the HF `Cache`
-> interface — verify that interface against 5.13.0 when wiring M2
-> (see [m2_design.md](m2_design.md) §4 Decision 5).
+> transformers is **5.x** (major version). Passing `MyKVCache` as `past_key_values`
+> duck-types the HF `Cache` interface; on 5.13.0 this required adding **one** shim,
+> `get_mask_sizes` (resolved — MyKVCache now matches HF token-for-token on 3B).
+> See [m2_design.md](m2_design.md) §4 Decision 5.
 
 ## Measurement protocol
 
