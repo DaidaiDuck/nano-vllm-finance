@@ -3,19 +3,29 @@
 #   python -m benchmarks.cache_microbench
 #   python -m benchmarks.cache_microbench --max-steps 4096 --checkpoints 256
 #
-# Micro-benchmark: HF DynamicCache (torch.cat, O(n^2)) vs MyKVCache (pre-alloc, O(n)).
+# Micro-benchmark: HF DynamicCache vs MyKVCache, timing the KV-cache op in isolation
+# (model removed) so each cache's per-step scaling is visible. One "step" = writing
+# one new token to every layer (num_layers update() calls) = one decode step minus
+# the model.
 #
-# WHY this exists: end-to-end TPOT does NOT reveal the torch.cat cost, because a
-# single decode step is dominated by streaming the model weights (~34 ms), and the
-# KV-cache copy is only ~0.2% of that even at 2000+ tokens. This script removes the
-# model entirely and times ONLY the cache op, so the O(n^2) vs O(n) scaling becomes
-# visible: DynamicCache's per-step time rises linearly with sequence length (=> total
-# quadratic), while MyKVCache stays flat (=> total linear).
+# FINDINGS (A100, Qwen2.5-3B config: 36 layers, 2 kv heads, 128 head_dim) — these
+# contradict the naive "custom cache is faster" intuition:
+#   - DynamicCache (torch.cat): the copy IS O(n), but per-step time only rises gently
+#     (~800 -> ~880 us over seq 33 -> 4128). It is OVERHEAD-BOUND — a ~800 us fixed
+#     floor (per-layer kernel launch + alloc) dwarfs the O(n) copy. O(n^2) is real but
+#     needs tens of thousands of tokens to dominate; unreachable in practice.
+#   - MyKVCache (pre-alloc, seq-major): flat but ~3.8x SLOWER (~3260 vs ~860 us). Not
+#     because it copies more bytes, but because it issues ~3x more GPU kernels per
+#     update (transpose + contiguous, on both write and read) vs DynamicCache's single
+#     cat. The slowdown is kernel-launch count, not bytes.
+# So at single request the custom cache is SLOWER. Its payoff is architectural
+# (owning the layout enables M3 PagedAttention / M4 batching), not raw speed.
 #
-# HONEST CAVEAT: this measures the cache data structure in isolation. It does NOT
-# translate into an end-to-end single-request speedup (the model forward dominates).
-# The real payoff of a custom cache is architectural — it enables M3 (PagedAttention)
-# and M4 (batching), where the O(n^2) + allocator churn actually bites.
+# MEASUREMENT NOTE — ALWAYS WARM UP. Without warmup the first timed step eats one-time
+# cold-start costs (CUDA kernel JIT/caching + the allocator's first cudaMalloc). In an
+# early run the first point (seq=33) measured 936 us — the HIGHEST of all — purely from
+# cold start; after adding warmup it dropped to 833 us and the curve became clean.
+# _time_decode() below warms a throwaway cache before the timed loop.
 
 import argparse
 import json
@@ -127,7 +137,8 @@ def main():
         print("No backend ran successfully.")
         return
 
-    # Per-step time vs sequence length (the money table: DynamicCache rises, MyKVCache flat)
+    # Per-step time vs seq_len: DynamicCache rises only gently (overhead-bound);
+    # MyKVCache is flat but several x higher (more kernel launches per update).
     print("\n=== per-step update time (us) vs seq_len ===")
     names = list(results.keys())
     lens = sorted(next(iter(results.values()))["per_step_us"].keys())
