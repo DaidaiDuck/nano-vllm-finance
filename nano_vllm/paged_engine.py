@@ -18,7 +18,7 @@ class PagedEngine:
     def __init__(
             self, 
             model_name: str,
-            block_size: int = 16, 
+            block_size: int = 256, # flash_attn_with_kvcache requires block_size % 256 == 0 
             device: str = "cuda" 
             ):
         # Load tokenizer 
@@ -39,7 +39,7 @@ class PagedEngine:
         self.block_size = block_size
         # [derek.sun] In M3, set num_blocks to 10000. 10000 is enough for M3 scenario.
         # TODO: Real and max gpu blocks will be calculated in M4 to maximize concurrency and throughput. 
-        num_blocks = 10000 
+        num_blocks = 1000
         num_kv_heads = cfg.num_key_value_heads 
         head_dim = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads) 
         dtype= self.model.dtype    # = bf16
