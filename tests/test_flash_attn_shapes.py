@@ -1,5 +1,3 @@
-from numpy import block
-
 import pytest
 import torch
 
@@ -35,15 +33,15 @@ def _seqlens(n):                # [1] int32 cuda
 def test_prefill_shape_and_append():
     seqlen = 10 
     q = _rand(1, seqlen, N_HEADS, HEAD_DIM)
-    k = _rand(1, seqlen, N_HEADS, HEAD_DIM)
-    v = _rand(1, seqlen, N_HEADS, HEAD_DIM)
+    k = _rand(1, seqlen, N_KV, HEAD_DIM)
+    v = _rand(1, seqlen, N_KV, HEAD_DIM)
     k_cache, v_cache = _empty_cache() 
     block_table = _block_table(2)
     out = flash_attn_with_kvcache(
         q=q, k=k, v=v, k_cache=k_cache, v_cache=v_cache, 
         cache_seqlens=_seqlens(0),   # cache has zero token at first
         block_table=block_table,
-        casual=True,
+        causal=True,
     )
     
     assert out.shape == (1, seqlen, N_HEADS, HEAD_DIM) # Output shape 
@@ -62,7 +60,7 @@ def test_decode_shape_after_prefill():
         k_cache=k_cache, v_cache=v_cache,
         cache_seqlens=_seqlens(0), # Prefill starts with 0 token
         block_table=block_table, 
-        casual=True, 
+        causal=True, 
     )
     # Decode the 11st token 
     out = flash_attn_with_kvcache(
@@ -74,7 +72,7 @@ def test_decode_shape_after_prefill():
         block_table=block_table,
         causal=True,
     )
-    assert out.shape == [1, 11, N_HEADS, HEAD_DIM]
+    assert out.shape == (1, 1, N_HEADS, HEAD_DIM)
 
 
 
