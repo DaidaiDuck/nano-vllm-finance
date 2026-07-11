@@ -19,3 +19,15 @@ class RequestOutput:
     finish_reason: Optional[str] = None  # "stop" | "length"
 
     
+@dataclass
+class Request:
+    id: str
+    prompt: str
+    num_computed_tokens: int = 0  # tokens already in KV Cache
+
+
+@dataclass
+class KVCacheConfig:
+    """
+    The KV cache configurato
+    """

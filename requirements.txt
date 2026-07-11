@@ -5,6 +5,14 @@ accelerate>=0.29.0
 numpy>=1.26.0
 pydantic>=2.0.0
 
+# FlashAttention (M3 PagedAttention). NOT a normal pip dep — the wheel must match
+# torch/cuda/python (here torch 2.4 / cu12.4 / py3.11), else pip does a slow source
+# build (needs nvcc + lots of RAM). It may already be on the RunPod image — check:
+#   python -c "import flash_attn; print(flash_attn.__version__)"
+# Paged KV cache (block_table in flash_attn_with_kvcache) needs >= 2.5.8; flash-attn 2.x
+# supports Ampere (A100). Install if missing:  pip install flash-attn --no-build-isolation
+flash-attn==2.6.3
+
 # dev
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
