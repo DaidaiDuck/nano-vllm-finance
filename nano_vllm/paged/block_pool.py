@@ -1,4 +1,4 @@
-from nano_vllm.kv_cache_utils import KVCacheBlock
+from nano_vllm.paged.kv_cache_utils import KVCacheBlock
 
 class BlockPool:
     """

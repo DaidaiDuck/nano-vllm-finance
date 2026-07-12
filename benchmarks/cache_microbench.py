@@ -33,7 +33,7 @@ import time
 
 import torch
 
-from nano_vllm.kv_cache import MyKVCache
+from nano_vllm.simple.kv_cache import MyKVCache
 
 
 def _kv(num_kv_heads, seq_len, head_dim, device, dtype):

@@ -1,20 +1,17 @@
-# 从0构建nano-vllm (M3): PagedAttention —— 分块 KV + FlashAttention 内核
+# 从0构建nano-vllm (M3): 实现PagedAttention
 
 [English](m3_paged_attention.md) | **中文**
 
-> 系列:一次一个里程碑,重新实现 vLLM 的核心思想.
-> **M3 - PagedAttention** 把 M2 那块"预分配的连续 KV cache"换成**分页存储**:一个 block pool、
-> 每个请求一张 `block_table`、外加 **FlashAttention 的 paged 内核** `flash_attn_with_kvcache`.
-> 路线是 **Route A**:保留 HuggingFace 的整套模型,只 monkey-patch 每层的 `Qwen2Attention.forward`.
->
+> 从 M2 按照**模型最大序列长**预分配的连续 KV cache 换成**Block Pool管理**:所有的blocks由Block Pool管理，一个block能装下256个token的KV, 按照需求的上下文长度分配自己的blocks，M3实现的**按需分配思想**相比M2在短上下文请求中实现了巨大的内存节约，这个在下面的benchmark结果展示中可以体现。此外，每个请求所对应的KV Block在物理上不需要是连续内存，相比M2可以充分利用碎片内存空间，实现内存使用最大化的优势。 
+
 > M3 设计文档:[m3_design.md](../design/m3_design.md) · 代码 tag:
 > [m3](https://github.com/DaidaiDuck/nano-vllm-finance/tree/m3)
 
 ---
 
-M2 证明了自研连续 cache 正确、但单请求下反而更慢——它的真正价值是**为 M3/M4 掌控内存布局打基础**。
-M3 就是来兑现这个基础的:把连续 buffer 换成**分页**,让每个请求只占 `ceil(len/block_size)` 块、
-释放后回池复用,并第一次用上 FlashAttention 的 paged 内核。下面把从零实现 PagedAttention
+M2 证明了自研连续 cache 的可行性和正确性、但在单请求下反而更慢——它的真正价值是**为 M3/M4 掌控内存布局打基础**。
+M3 把M2中连续 buffer 换成**分块**,让每个请求只占 `ceil(len/block_size)` 块、
+请求结束后自己的KV块释放后回池复用,并第一次用上 FlashAttention 的 paged 内核。我下面会把从零实现 PagedAttention
 (Route A:monkey-patch HF `Qwen2Attention`)过程里的**所有核心知识点**逐个讲清。
 
 # 核心知识点
@@ -112,7 +109,11 @@ dtype        = self.model.dtype   # bf16
 ```
 ### 6.3 num_blocks
 `bytes_per_block = num_layers * block_size * num_kv_heads * head_dim * 2(bf16) * 2(K,V)`;
-`free,_ = torch.cuda.mem_get_info(); num_blocks = int(free*0.9)//bytes_per_block`。M3 写死 10000 够用。
+`free,_ = torch.cuda.mem_get_info(); num_blocks = int(free*0.9)//bytes_per_block`。M3 写死够用即可。
+
+> **踩坑:官方 flash-attn 要求 page block size 是 256 的倍数**(`must be divisible by 256`)。
+> vLLM 能用 16 是因为它带自己 patch 过的 kernel;走官方 wheel 就得用 **`block_size=256`**
+> (相应把 `num_blocks` 降到 ~625,保持池子 ~5.9GB)。
 ### 6.4 必须显式传 position_ids
 M3 绕过 HF cache,HF 无法从 cache 长度推 position → RoPE 会错。
 prefill:`torch.arange(prompt_len, device="cuda").unsqueeze(0)` `[1,seq]`;
@@ -148,6 +149,43 @@ decode:`torch.tensor([[num_computed_tokens]], device="cuda")` `[1,1]`。
 
 ---
 
-> 这篇先把知识点铺齐,后续会补上"从踩坑到跑通"的叙事(monkey-patch 的坑、transpose 方向、返回 tuple、
-> block_table 传 id 而非 count 等),以及 M1/M2/M3 的 benchmark 对比。英文版见
-> [m3_paged_attention.md](m3_paged_attention.md)。
+## Benchmark:两条独立的线
+
+A100 80GB(Qwen2.5-3B bf16,单请求)上跑完 M1/M2/M3。**正确性先过**:M3 greedy 输出与 HF
+逐 token 一致(`test_m3_vs_hf.py` 3/3)。然后 M3 讲了一个和 M2 相反的故事——**第一次真的变快了**。
+
+### Latency:靠 flash-attn kernel,不是 paging
+
+| 场景 | TPOT M1 | TPOT M2 | **TPOT M3** | M3 vs M1 | **M3 吞吐** |
+|---|---|---|---|---|---|
+| short_chat | 30.2 | 31.0 | **26.2** ms | −13% | **38.2** tok/s |
+| medium_chat | 30.3 | 31.2 | **26.4** ms | −13% | **37.9** tok/s |
+| long_context | 30.0 | 31.1 | **26.3** ms | −12% | **37.0** tok/s |
+
+decode 快 ~13%(vs M1)、~15%(vs M2)。**关键:加速来自融合的 `flash_attn_with_kvcache`
+kernel + 甩掉 M2 的 transpose 税,不是分页本身**——分页是内存管理,不改单请求的计算量。
+M2 那句"pay the tax now, refund at M3"应验了:M2 比 M1 慢 ~6%,M3 把这税退了还叠加 kernel 收益。
+
+一个诚实的"输":**长 prompt 的 prefill(TTFT)慢 ~8%**(long_context 85→92ms,flash-attn 的
+paged prefill vs HF dense SDPA),但 decode 主导,端到端 M3 仍快 ~12%。
+
+### Memory:靠 paging
+
+每请求 KV 占用(M2 按 `max_seq_len` 预留 302MB;M3 只占 `ceil(len/256)` 块):
+
+| 场景 | 平均长度 | M2(固定) | M3(分页) | 省 |
+|---|---|---|---|---|
+| short_chat | 225 | 302 MB | 9.4 MB | **−96.9%** |
+| medium_chat | 726 | 302 MB | 28.3 MB | **−90.6%** |
+| long_context | 2099 | 302 MB | 84.9 MB | **−71.9%** |
+
+请求越短省得越多(M2 的固定预留纯浪费)。这份每请求的节省,正是 **M4** 能把多个并发序列塞进
+一个池子的基础。
+
+### 一句话
+**latency 靠 flash-attn kernel,memory 靠 paging——两条独立的线。**
+
+---
+
+> 后续会补上"从踩坑到跑通"的完整叙事(monkey-patch 的坑、transpose 方向、返回 tuple、
+> block_table 传 id 而非 count、256 约束 等)。英文版见 [m3_paged_attention.md](m3_paged_attention.md)。

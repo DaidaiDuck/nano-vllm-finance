@@ -1,15 +1,16 @@
-# nano_vllm/engine.py
+# nano_vllm/simple/engine.py -- M1 & M2 ONLY (HF DynamicCache / MyKVCache). M3+ live in nano_vllm/paged/.
 from typing import Iterator
 
-from nano_vllm.kv_cache import MyKVCache
+from nano_vllm.simple.kv_cache import MyKVCache
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from nano_vllm.sampler import Sampler
-from nano_vllm.types import SamplingParams, RequestOutput
+from nano_vllm.core.sampler import Sampler
+from nano_vllm.core.types import SamplingParams, RequestOutput
 
 class SimpleEngine:
     """
-    单请求 generation 引擎.
+    单请求 generation 引擎 —— **M1 + M2 专用**。
+    M3 起改用 nano_vllm/paged/engine.py 的 PagedEngine(PagedAttention),本文件不再演进。
 
     use_custom_cache 选择 KV cache 后端, 用于 M1 vs M2 的公平对比:
       True  (M2) -> 自研的预分配 MyKVCache

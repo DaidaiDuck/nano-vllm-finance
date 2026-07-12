@@ -1,8 +1,8 @@
 
 import torch
-from nano_vllm.kv_cache_utils import KVCacheBlock
-from nano_vllm.block_pool import BlockPool
-from nano_vllm.types import Request
+from nano_vllm.paged.kv_cache_utils import KVCacheBlock
+from nano_vllm.paged.block_pool import BlockPool
+from nano_vllm.core.types import Request
 
 class KVCacheManager:
     def __init__(

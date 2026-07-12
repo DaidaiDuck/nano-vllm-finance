@@ -44,7 +44,7 @@ PROMPTS = [
 @pytest.fixture(scope="module")
 def llm():
     """The M3 engine. Constructing it monkey-patches its own model's attention."""
-    from nano_vllm.paged_engine import LLM
+    from nano_vllm.paged.engine import LLM
     return LLM(MODEL_NAME)
 
 

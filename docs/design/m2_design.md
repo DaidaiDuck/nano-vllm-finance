@@ -245,11 +245,11 @@ def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
     return k_full, v_full
 ```
 
-Full implementation: [nano_vllm/kv_cache.py](../../nano_vllm/kv_cache.py).
+Full implementation: [nano_vllm/simple/kv_cache.py](../../nano_vllm/simple/kv_cache.py).
 
 ### Engine integration (done)
 
-`generate()` and `generate_stream()` in [nano_vllm/engine.py](../../nano_vllm/engine.py)
+`generate()` and `generate_stream()` in [nano_vllm/simple/engine.py](../../nano_vllm/simple/engine.py)
 now use a persistent `MyKVCache` instance. A `use_custom_cache` flag on
 `SimpleEngine` / `LLM` selects the backend (`True` → MyKVCache, `False` → HF
 DynamicCache) so both can be A/B-benchmarked through one harness:

@@ -7,8 +7,8 @@
 import torch
 
 # 直接从子模块导入，避免经由 nano_vllm/__init__.py 拖入 engine.py（需要 GPU/模型）
-from nano_vllm.sampler import Sampler
-from nano_vllm.types import SamplingParams
+from nano_vllm.core.sampler import Sampler
+from nano_vllm.core.types import SamplingParams
 
 
 def _logits(values):

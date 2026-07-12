@@ -10,7 +10,7 @@
 # NOTE: M3 (PagedAttention) needs flash-attn + a CUDA GPU -> run on the pod, not local Mac.
 import argparse
 
-from nano_vllm.paged_engine import LLM          # M3's own LLM (paged); NOT the M1/M2 LLM
+from nano_vllm.paged.engine import LLM          # M3's own LLM (paged); NOT the M1/M2 LLM
 from transformers import AutoTokenizer
 from benchmarks.scenarios import SCENARIOS
 from benchmarks.runner import BenchmarkRunner

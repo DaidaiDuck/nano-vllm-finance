@@ -39,7 +39,9 @@ def main():
     ap.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct")
     ap.add_argument("--max-seq-len", type=int, default=8192,
                     help="M2's pre-allocated max_seq_len (nano_vllm/engine.py default: 8192)")
-    ap.add_argument("--block-size", type=int, default=16, help="M3 paged block size")
+    ap.add_argument("--block-size", type=int, default=256,
+                    help="M3 paged block size (256 = engine default; stock flash-attn "
+                         "requires page size %% 256 == 0)")
     ap.add_argument("--dtype-bytes", type=int, default=2, help="bf16 = 2")
     # Optional offline overrides (skip AutoConfig download):
     ap.add_argument("--num-layers", type=int, default=None)

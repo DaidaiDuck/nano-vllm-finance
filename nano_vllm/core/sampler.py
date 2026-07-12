@@ -1,7 +1,7 @@
 # nano_vllm/sampler.py
 import torch
 from dataclasses import dataclass
-from nano_vllm.types import SamplingParams
+from nano_vllm.core.types import SamplingParams
 
 class Sampler:
     def sample(self, logits: torch.Tensor, params: SamplingParams) -> int: 

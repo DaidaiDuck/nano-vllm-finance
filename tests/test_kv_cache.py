@@ -8,7 +8,7 @@ nano_vllm/__init__.py 拖入 engine.py (需要 GPU/模型)。
 import pytest
 import torch
 
-from nano_vllm.kv_cache import MyKVCache
+from nano_vllm.simple.kv_cache import MyKVCache
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 DTYPES = [torch.float32, torch.bfloat16]

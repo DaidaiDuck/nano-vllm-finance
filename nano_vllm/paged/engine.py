@@ -1,17 +1,17 @@
-# nano_vllm/paged_engine.py
+# nano_vllm/paged/engine.py -- M3 and later (PagedAttention). Supersedes simple/engine.py from M3 on.
 from typing import Iterator
 import types 
-from nano_vllm.block_pool import BlockPool
+from nano_vllm.paged.block_pool import BlockPool
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from nano_vllm.kv_cache_manager import KVCacheManager
-from nano_vllm.paged_attention import ENGINE_CTX, paged_attn_forward
-from nano_vllm.sampler import Sampler
-from nano_vllm.types import SamplingParams, RequestOutput, Request
+from nano_vllm.paged.kv_cache_manager import KVCacheManager
+from nano_vllm.paged.paged_attention import ENGINE_CTX, paged_attn_forward
+from nano_vllm.core.sampler import Sampler
+from nano_vllm.core.types import SamplingParams, RequestOutput, Request
 
 class PagedEngine:
     """
-    M3 Single Request Inference Engine.
+    M3+ Inference Engine (PagedAttention). Used from M3 onward; M4 continuous-batching extends THIS file, not simple/.
 
     Achieve Paged Attention 
     """

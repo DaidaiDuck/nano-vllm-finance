@@ -1,7 +1,7 @@
 # tests/test_types.py
 """SamplingParams / RequestOutput 数据类的单元测试。"""
 # 直接从子模块导入，避免经由 nano_vllm/__init__.py 拖入 engine.py（需要 GPU/模型）
-from nano_vllm.types import SamplingParams, RequestOutput
+from nano_vllm.core.types import SamplingParams, RequestOutput
 
 
 def test_sampling_params_defaults():
