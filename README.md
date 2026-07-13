@@ -95,6 +95,10 @@ M2's transpose tax), *not* paging itself. Same-session M1 / M2 / M3:
 | medium_chat | 30.3 / 31.2 / **26.4** ms | **−13%** | **37.9** tok/s | 32.3 / **30.6** ms |
 | long_context | 30.0 / 31.1 / **26.3** ms | **−12%** | **37.0** tok/s | 85.2 / **91.7** ms |
 
+> **Source** (all in [`benchmarks/results/m3/`](benchmarks/results/m3/), same session):
+> M1 `nano_vllm_m1_20260711_012918.json`, M2 `nano_vllm_m2_20260711_013719.json`,
+> M3 `nano_vllm_m3_20260711_014557.json` — fields `avg_tpot` / `avg_ttft` / `output_throughput`.
+
 Two honest caveats: (1) M1/M2 here are re-baselined in the same session as M3, so their
 absolute numbers differ from the M2 table above (run-to-run machine variance — what
 matters is the within-session delta). (2) **Long-prompt prefill (TTFT) is ~8% slower**
@@ -110,6 +114,10 @@ KV footprint (`python -m benchmarks.kv_footprint --block-size 256`):
 | short_chat | 225 | 302 MB | 9.4 MB | **−96.9%** |
 | medium_chat | 726 | 302 MB | 28.3 MB | **−90.6%** |
 | long_context | 2099 | 302 MB | 84.9 MB | **−71.9%** |
+
+> **Source**: avg lengths from M3 [`nano_vllm_m3_20260711_014557.json`](benchmarks/results/m3/nano_vllm_m3_20260711_014557.json)
+> (`avg_prompt_len + avg_output_len`); MB computed by `benchmarks/kv_footprint.py --block-size 256`
+> (M2 = fixed `max_seq_len` 8192).
 
 The shorter the request, the bigger the win (M2's fixed reservation is pure waste). This
 per-request saving is what lets M4 pack many concurrent sequences into one pool. Full

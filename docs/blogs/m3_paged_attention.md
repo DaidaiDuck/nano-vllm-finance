@@ -161,9 +161,11 @@ tests/test_m3_vs_hf.py::test_greedy_matches_hf[Explain photosynthesis in one sen
 | medium_chat | 30.3 | 31.2 | **26.4** ms | −13% | **37.9** tok/s | 30.6 ms |
 | long_context | 30.0 | 31.1 | **26.3** ms | −12% | **37.0** tok/s | 91.7 ms |
 
-> TTFT is taken from [nano_vllm_m3_20260711_014557.json](../../benchmarks/results/m3/nano_vllm_m3_20260711_014557.json)
-> (`avg_ttft`; short→long: 0.0269 / 0.0306 / 0.0917 s). The long prompt's TTFT is much higher
-> because prefill has to process the entire long prompt in one shot.
+> **Data source** (all in [`benchmarks/results/m3/`](../../benchmarks/results/m3/), same session):
+> M1 `nano_vllm_m1_20260711_012918.json`, M2 `nano_vllm_m2_20260711_013719.json`,
+> M3 `nano_vllm_m3_20260711_014557.json` — fields `avg_tpot` / `avg_ttft` / `output_throughput`
+> (M3 TTFT in seconds, short→long: 0.0269 / 0.0306 / 0.0917). The long prompt's TTFT is much
+> higher because prefill processes the whole long prompt in one shot.
 
 M3 decode is ~13% faster (vs M1), ~15% (vs M2). **The key: the lower latency comes from the
 fused `flash_attn_with_kvcache` kernel + dropping M2's transpose overhead — not paging itself**
@@ -196,6 +198,10 @@ requests only use tens–hundreds of tokens, and that gap is the saving below.
 | short_chat | 225 | 302 MB | 9.4 MB | **−96.9%** |
 | medium_chat | 726 | 302 MB | 28.3 MB | **−90.6%** |
 | long_context | 2099 | 302 MB | 84.9 MB | **−71.9%** |
+
+> **Data source**: avg lengths from M3 [`nano_vllm_m3_20260711_014557.json`](../../benchmarks/results/m3/nano_vllm_m3_20260711_014557.json)
+> (`avg_prompt_len + avg_output_len`); MB computed by `benchmarks/kv_footprint.py --block-size 256`
+> (M2 = fixed `max_seq_len` 8192).
 
 The shorter the request, the more memory M3 saves — as expected.
 
