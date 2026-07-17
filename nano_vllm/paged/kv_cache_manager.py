@@ -18,15 +18,25 @@ class KVCacheManager:
         self,
         request: Request, 
         num_new_tokens: int,
-        block_size: int
-    ):
+    ) -> list[KVCacheBlock]:
         total_tokens = request.num_computed_tokens + num_new_tokens 
-        blocks_needed = (total_tokens + block_size - 1) // block_size
-        blocks_allocated:list[KVCacheBlock] = self.req_to_blocks.get(request.id, []) # When new request comes, initialize its block table to []. 
+        blocks_needed = (total_tokens + self.block_size - 1) // self.block_size
+        blocks_allocated:list[KVCacheBlock] = self.req_to_blocks.get(request.request_id, []) # When new request comes, initialize its block table to []. 
+        num_new_blocks_needed = blocks_needed - len(blocks_allocated)
+
+        if num_new_blocks_needed <= 0: 
+            # No need to allocate a new block because the last existing one has not been filled. 
+            return [] 
         
-        if len(blocks_allocated) < blocks_needed: 
-            new_blocks = self.block_pool.get_new_blocks(blocks_needed - len(blocks_allocated))
-            self.req_to_blocks[request.id] = blocks_allocated + new_blocks
+        if num_new_blocks_needed > self.block_pool.free_block_queue.get_num_free_blocks():
+            # No enough free blocks to allocate for this request. 
+            # Return None. 
+            return None 
+        
+        new_blocks = self.block_pool.get_new_blocks(blocks_needed - len(blocks_allocated))
+        self.req_to_blocks[request.request_id] = blocks_allocated + new_blocks
+        
+        return new_blocks
         
 
     def free(
@@ -37,7 +47,7 @@ class KVCacheManager:
             Args:
                 request:Request
         """
-        blocks_allocated = self.req_to_blocks.pop(request.id, None) 
+        blocks_allocated = self.req_to_blocks.pop(request.request_id, None) 
         if blocks_allocated:
             # Free blocks of the request in the block pool.
             self.block_pool.free_blocks(blocks_allocated)
