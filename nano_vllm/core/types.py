@@ -1,6 +1,6 @@
 # nano_vllm/types.py
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum,Enum
 from typing import Optional
 
 @dataclass
@@ -8,16 +8,16 @@ class SamplingParams:
     temperature: float = 0.0 
     top_k: int = -1
     top_p: float = 1.0 
-    max_tokens: int = 100 
+    max_tokens: int = 100  # Max number of output tokens in a request. (prompt not included)
 
 @dataclass
 class RequestOutput: 
     request_id: str 
-    prompt: str 
-    text: str 
-    token_ids: list[int]
-    finished: bool
-    finish_reason: Optional[str] = None  # "stop" | "length"
+    token_ids: list[int]        # Output token_ids 
+    finished: bool              # True / False
+    finish_reason: Optional[str] = None  # "stop" (eos) | "length" (max_tokens)
+    text: str = ""              # Output text 
+
 
     
 class Request:
@@ -42,12 +42,12 @@ class Request:
     """
     
 
-    def __init__(self, request_id, prompt_token_ids, sampling_params): 
+    def __init__(self, request_id, prompt_token_ids, sampling_params:SamplingParams, eos_token_id=None):  
         self.request_id = request_id
         self.status = RequestStatus.WAITING
         self.prompt_token_ids = prompt_token_ids
         self.sampling_params = sampling_params
-        self.max_tokens = sampling_params.max_tokens
+        self.max_tokens = sampling_params.max_tokens # Max number of output tokens
 
         self._output_token_ids: list[int] = []
     
@@ -59,7 +59,9 @@ class Request:
         self._all_token_ids: list[int] = list(prompt_token_ids) 
         self.num_computed_tokens = 0
         self.num_prompt_tokens = len(prompt_token_ids)
-        self.num_preemptions = 0            
+        self.num_preemptions = 0 
+        self.eos_token_id = eos_token_id            # End token_id of the request. Used to check if the request should stop. 
+        self.finish_reason = None 
 
     @property
     def num_tokens(self) -> int:
@@ -72,8 +74,11 @@ class RequestStatus(IntEnum):
     WAITING = 1
     RUNNING = 2
     PREEMPTED = 3
-    FINISHED_STOPPED = 4 
+    FINISHED = 4 
 
+class FinishReason(str, Enum): 
+    STOP = "stop" 
+    LENGTH = "length" 
 
 @dataclass
 class KVCacheConfig:
@@ -94,6 +99,6 @@ class SchedulerOutput:
 
 @dataclass 
 class ModelRunnerOutput:
-    sampled_token_ids : list[int] #
-    req_to_index : dict[str, int] #
+    sampled_token_ids : list[list[int]] # new token ids produced for the requests in batch at each step 
+    req_to_index : dict[str, int]       # key: request_id   value: line number of request in model runner's batch   Use for getting new tokens from sampled_token_ids
 

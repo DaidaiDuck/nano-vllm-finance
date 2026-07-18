@@ -1,7 +1,7 @@
 
 from collections import deque
 from nano_vllm.paged.kv_cache_manager import KVCacheManager
-from nano_vllm.core.types import RequestOutput, SchedulerOutput, Request, RequestStatus, ModelRunnerOutput
+from nano_vllm.core.types import RequestOutput, SchedulerOutput, Request, RequestStatus, ModelRunnerOutput, FinishReason
 
 class Scheduler():
     
@@ -143,59 +143,69 @@ class Scheduler():
         )
 
         return scheduler_output
+    
 
-                
+    def update_from_output(
+        self,
+        scheduler_output: SchedulerOutput,
+        model_runner_output: ModelRunnerOutput
+    ): 
+        sampled_token_ids = model_runner_output.sampled_token_ids 
+        num_scheduled_tokens = scheduler_output.num_scheduled_tokens
 
-    # def update_from_output(
-    #     self,
-    #     scheduler_output: SchedulerOutput,
-    #     model_runner_output: ModelRunnerOutput
-    # ): 
-    #     sampled_token_ids = model_runner_output.sampled_token_ids 
-    #     num_scheduled_tokens = scheduler_output.num_scheduled_tokens
+        outputs = []
+        stopped_reqs = set()
 
-    #     outputs = []
-    #     stopped_reqs = set()
+        for req_id, num_token_scheduled in num_scheduled_tokens.items():
+            request:Request = self.requests[req_id] 
 
-    #     for req_id, num_token_scheduled in num_scheduled_tokens.items():
-    #         request:Request = self.requests[req_id] 
+            # 1. update num_computed_tokens
+            request.num_computed_tokens += num_token_scheduled
 
-    #         # 1. update num_computed_tokens
-    #         request.num_computed_tokens += num_token_scheduled
+            # 2. get current request's new token
+            req_index = model_runner_output.req_to_index[req_id]
+            new_tokens = sampled_token_ids[req_index]
 
-    #         # 2. get current request's new token
-    #         # TODO: What if the request is in prefill stage and got have lots of new tokens? 
-    #         req_index = model_runner_output.req_to_index[req_id]
-    #         new_token = sampled_token_ids[req_index]
+            # 3. Check if request is doing chunked prefill.
+            if request.num_computed_tokens < request.num_prompt_tokens:
+                # The request has not finish prefill.
+                continue 
 
-    #         # 3. Check if request is doing chunked prefill.
-    #         if request.num_computed_tokens < num_prompt_tokens:
-    #             # The request has not finish prefill.
-    #             continue 
+            # 4. Append token to the request
+            request._output_token_ids.extend(new_tokens)
+            request._all_token_ids.extend(new_tokens)
 
-    #         # 4. Append token to the request
-    #         request._output_token_ids.append(new_token)
-    #         request._all_token_ids.append(new_token)
+            # 5. Check stop condition
+            finish_reason:FinishReason = self._check_stop(request) # Check EOS or max tokens 
 
-    #         # 5. Check stop condition
-    #         stopped = _check_stop(request) # Check EOS or max tokens 
-
-    #         # 6. If request is stopped, clean the request.
-    #         if stopped:
-    #             request.status = RequestStatus.FINISHED_STOPPED
-    #             stopped_reqs.add(request)
-    #             self.kv_cache_manager.free(request) 
+            # 6. If request is stopped, clean the request.
+            if finish_reason is not None:
+                request.status = RequestStatus.FINISHED
+                request.finish_reason = finish_reason
+                stopped_reqs.add(request)
+                self.kv_cache_manager.free(request) 
             
-    #         outputs.append(RequestOutput(
-    #             request_id=req_id, 
-    #             prompt = request.num_prompt_tokens, 
-    #             text = request._output_token_ids,
-    #             finished = request.status == FINISHED_STOPPED
-    #         ))
+            outputs.append(RequestOutput(
+                request_id = req_id, 
+                token_ids = request._output_token_ids,
+                finished = finish_reason is not None,
+                finish_reason = finish_reason,
+            ))
 
-    #     # 7.Remove stopped request from running.
-    #     self.running = [r for r in self.running if r not in stopped_reqs] 
+        # 7.Remove stopped request from running.
+        self.running = [r for r in self.running if r not in stopped_reqs] 
 
-    #     return outputs 
+        return outputs 
 
+
+    def add_request(self, request:Request):
+        self.waiting.append(request) 
+        self.requests[request.request_id] = request 
+    
+    def _check_stop(self, request:Request) -> FinishReason | None: 
+        if request._output_token_ids[-1] == request.eos_token_id:
+            return FinishReason.STOP
+        elif len(request._output_token_ids) >= request.max_tokens:
+            return FinishReason.LENGTH
+        return None 
 
