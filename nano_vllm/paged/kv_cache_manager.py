@@ -52,17 +52,5 @@ class KVCacheManager:
             # Free blocks of the request in the block pool.
             self.block_pool.free_blocks(blocks_allocated)
     
-    def get_block_table(
-        self,
-        request:Request
-    ):
-        """
-        [derek.sun] FlashAttention needs block_table's shape to be [batch_size, num_blocks]. 
-        FlashAttention also needs data type to be int32. 
-        get_block_table converts [num_blocks] to [batch_size, num_blocks] with dtype=int32. 
-        """
-        block_ids = [block.block_id for block in self.req_to_blocks[request.id]]
-        return torch.tensor([block_ids], dtype=torch.int32, device="cuda")
-    
 
     

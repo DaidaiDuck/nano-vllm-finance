@@ -4,7 +4,15 @@ from dataclasses import dataclass
 from nano_vllm.core.types import SamplingParams
 
 class Sampler:
-    def sample(self, logits: torch.Tensor, params: SamplingParams) -> int: 
+    def sample(self, logits: torch.Tensor, sampling_params_list: list[SamplingParams]) -> list[int]: 
+        """
+        Sample the next token for each request in batch. 
+        Args: 
+            logits: [batch, vacab_size] 
+        """
+        return [self.sample_one(logits[i], sampling_params_list[i]) for i in range(logits.shape[0])]
+
+    def sample_one(self, logits: torch.Tensor, params: SamplingParams) -> int: 
         """
         从 logits sample 出一个 token
         Args:

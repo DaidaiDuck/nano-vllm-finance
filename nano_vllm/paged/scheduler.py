@@ -187,7 +187,7 @@ class Scheduler():
             
             outputs.append(RequestOutput(
                 request_id = req_id, 
-                token_ids = request._output_token_ids,
+                token_ids = list(request._output_token_ids), # Do not pass by reference here. 
                 finished = finish_reason is not None,
                 finish_reason = finish_reason,
             ))
