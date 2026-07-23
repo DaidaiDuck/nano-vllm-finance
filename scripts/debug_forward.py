@@ -23,8 +23,8 @@ MODEL = os.getenv("NANO_VLLM_TEST_MODEL", "Qwen/Qwen2.5-3B-Instruct")
 PROMPT = "Hello"
 
 
-def _capture_layer_outputs(model):
-    """Register hooks on each decoder layer; return a dict filled during the next forward."""
+def _capture_layer_outputs(backbone):
+    """Hook each decoder layer of a Qwen2Model backbone; dict is filled on the next forward."""
     captured = {}
 
     def make_hook(i):
@@ -34,7 +34,7 @@ def _capture_layer_outputs(model):
         return hook
 
     handles = [layer.register_forward_hook(make_hook(i))
-               for i, layer in enumerate(model.model.layers)]
+               for i, layer in enumerate(backbone.layers)]
     return captured, handles
 
 
