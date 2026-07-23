@@ -1,15 +1,14 @@
-"""Resolve the contradiction: o_proj INPUT matches (debug_oproj) but self_attn OUTPUT differs
-(debug_attn_output). Same input + same weights must give the same output -- so one of those,
-or the o_proj weights, is not what we think. Measure all three in ONE process, same models.
+"""Resolve the contradiction with ONLY the self_attn forward_hook (o_proj hooks don't fire
+in this environment). Four forwards in one process:
 
-Prints:
-  (1) o_proj weight diff        nano vs HF   -> should be 0 (same checkpoint)
-  (2) o_proj INPUT diff         nano vs HF   -> ~0 per debug_oproj
-  (3) self_attn OUTPUT diff     nano vs HF   -> the 6.7 to explain
+  nano real o_proj      -> self_attn output           (post o_proj)
+  nano Identity o_proj   -> self_attn output           (== o_proj INPUT)
+  hf   real o_proj       -> self_attn output
+  hf   Identity o_proj   -> self_attn output           (== o_proj INPUT)
 
-If (1)==0 and (2)==0 but (3) large, the two captures are inconsistent (a measurement
-artifact); the script then recomputes o_proj(input) by hand for both to see which side's
-real self_attn output disagrees with its own o_proj(input).
+Then: o_proj weight diff, o_proj INPUT diff (nano vs hf), o_proj OUTPUT diff (nano vs hf),
+and a consistency check that linear(input) reproduces output on each side. If INPUT matches
+and weights match but OUTPUT differs, the OUTPUT capture is the artifact.
 
 Run on the pod:
     NANO_VLLM_TEST_MODEL=Qwen/Qwen2.5-3B-Instruct python scripts/debug_combined.py
@@ -17,6 +16,7 @@ Run on the pod:
 import os
 
 import torch
+from torch import nn
 from transformers import AutoModelForCausalLM
 
 from nano_vllm.paged.engine import LLM
@@ -26,20 +26,19 @@ MODEL = os.getenv("NANO_VLLM_TEST_MODEL", "Qwen/Qwen2.5-3B-Instruct")
 PROMPT = "Hello"
 
 
-def _capture(backbone, input_ids, pos_ids):
-    """Capture layer-0 self_attn's o_proj INPUT and OUTPUT in a single forward.
-
-    A forward_hook receives (module, input, output), so one hook grabs both -- no flaky
-    forward_pre_hook needed.
-    """
+def _run(backbone, input_ids, pos_ids, identity_oproj):
+    """Return layer-0 self_attn output; optionally with o_proj swapped for Identity."""
     attn0 = backbone.layers[0].self_attn
+    real = attn0.o_proj
+    if identity_oproj:
+        attn0.o_proj = nn.Identity()
+
     store = {}
 
-    def hook(_m, inp, out):
-        store["in"] = inp[0].detach().float()
-        store["out"] = out.detach().float()
+    def hook(_m, _inp, out):
+        store["out"] = (out[0] if isinstance(out, tuple) else out).detach().float()
 
-    h = attn0.o_proj.register_forward_hook(hook)
+    h = attn0.register_forward_hook(hook)
     kwargs = {"input_ids": input_ids}
     if pos_ids is not None:
         kwargs["position_ids"] = pos_ids
@@ -48,7 +47,8 @@ def _capture(backbone, input_ids, pos_ids):
             backbone(**kwargs)
     finally:
         h.remove()
-    return attn0.o_proj, store
+        attn0.o_proj = real
+    return store["out"]
 
 
 def main():
@@ -60,34 +60,39 @@ def main():
     input_ids = torch.tensor([prompt_ids], device="cuda")
     pos_ids = torch.tensor([list(range(P))], device="cuda")
 
-    ENGINE_CTX.cu_seqlens_q = torch.tensor([0, P], dtype=torch.int32, device="cuda")
-    ENGINE_CTX.cu_seqlens_k = torch.tensor([0, P], dtype=torch.int32, device="cuda")
-    ENGINE_CTX.slot_mapping = torch.tensor(list(range(P)), dtype=torch.int64, device="cuda")
-    ENGINE_CTX.block_table = torch.tensor([[0]], dtype=torch.int32, device="cuda")
-    ENGINE_CTX.max_seqlen_q = P
-    ENGINE_CTX.max_seqlen_k = P
+    def set_ctx():
+        ENGINE_CTX.cu_seqlens_q = torch.tensor([0, P], dtype=torch.int32, device="cuda")
+        ENGINE_CTX.cu_seqlens_k = torch.tensor([0, P], dtype=torch.int32, device="cuda")
+        ENGINE_CTX.slot_mapping = torch.tensor(list(range(P)), dtype=torch.int64, device="cuda")
+        ENGINE_CTX.block_table = torch.tensor([[0]], dtype=torch.int32, device="cuda")
+        ENGINE_CTX.max_seqlen_q = P
+        ENGINE_CTX.max_seqlen_k = P
 
-    nano_oproj, nano = _capture(engine.model.model, input_ids, pos_ids)
+    nb = engine.model.model
+    set_ctx(); nano_out = _run(nb, input_ids, pos_ids, identity_oproj=False)
+    set_ctx(); nano_in = _run(nb, input_ids, pos_ids, identity_oproj=True)
 
     hf = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=torch.bfloat16, device_map="cuda")
     hf.eval()
-    hf_oproj, hf_s = _capture(hf.model, input_ids, None)
+    hb = hf.model
+    hf_out = _run(hb, input_ids, None, identity_oproj=False)
+    hf_in = _run(hb, input_ids, None, identity_oproj=True)
 
-    wdiff = (nano_oproj.weight.float() - hf_oproj.weight.float()).abs().max().item()
-    print(f"\n(1) o_proj.weight  nano vs hf   max|Δ| = {wdiff:.4e}")
+    nano_oproj = nb.layers[0].self_attn.o_proj
+    hf_oproj = hb.layers[0].self_attn.o_proj
 
-    print(f"(2) o_proj INPUT   nano vs hf   max|Δ| = "
-          f"{(nano['in'] - hf_s['in']).abs().max().item():.4e}")
-    print(f"(3) o_proj OUTPUT  nano vs hf   max|Δ| = "
-          f"{(nano['out'] - hf_s['out']).abs().max().item():.4e}")
+    print(f"\n(1) o_proj.weight   nano vs hf   max|Δ| = "
+          f"{(nano_oproj.weight.float() - hf_oproj.weight.float()).abs().max().item():.4e}")
+    print(f"(2) o_proj INPUT    nano vs hf   max|Δ| = {(nano_in - hf_in).abs().max().item():.4e}")
+    print(f"(3) o_proj OUTPUT   nano vs hf   max|Δ| = {(nano_out - hf_out).abs().max().item():.4e}")
 
-    # Sanity: does each side's own o_proj(input) reproduce its captured output?
-    def recompute(oproj, s):
-        y = torch.nn.functional.linear(s["in"].to(oproj.weight.dtype), oproj.weight, oproj.bias)
-        return (y.float() - s["out"]).abs().max().item()
+    def recompute(oproj, x):
+        return torch.nn.functional.linear(x.to(oproj.weight.dtype), oproj.weight, oproj.bias).float()
 
-    print(f"\nconsistency  nano o_proj(input)->output Δ = {recompute(nano_oproj, nano):.4e}"
-          f"   hf Δ = {recompute(hf_oproj, hf_s):.4e}  (both ~0 expected)")
+    print(f"\nconsistency  nano linear(input) vs output  Δ = "
+          f"{(recompute(nano_oproj, nano_in) - nano_out).abs().max().item():.4e}")
+    print(f"             hf   linear(input) vs output  Δ = "
+          f"{(recompute(hf_oproj, hf_in) - hf_out).abs().max().item():.4e}   (both ~0 expected)")
 
 
 if __name__ == "__main__":
