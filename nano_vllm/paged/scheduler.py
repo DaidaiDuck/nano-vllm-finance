@@ -19,7 +19,7 @@ class Scheduler():
         self.max_num_running_seqs = 10                              # Max number of concurrent running requests 
         self.current_step = 0                       
         self.long_prefill_token_threshold = 4096                    # Max number of prefill tokens at a step 
-        self.max_model_len = model_config.max_model_len             # Max context length the model can support: Max prompt + output length the model can support for a request. 
+        self.max_model_len = model_config.max_position_embeddings   # Max context length the model can support: Max prompt + output length the model can support for a request. 
         self.max_num_scheduled_tokens = max_num_scheduled_tokens    # Token budget / Max number of scheduled tokens at a step  
         self.requests: dict[str, Request] = {}                      
 
