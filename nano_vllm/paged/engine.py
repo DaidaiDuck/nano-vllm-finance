@@ -8,7 +8,7 @@ from nano_vllm.paged.scheduler import ModelRunnerOutput, Scheduler
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from nano_vllm.paged.kv_cache_manager import KVCacheManager
-from nano_vllm.paged.paged_attention import ENGINE_CTX, paged_attn_forward, batch_attn_forward
+from nano_vllm.paged.paged_attention import ENGINE_CTX, batch_attn_forward
 from nano_vllm.core.sampler import Sampler
 from nano_vllm.core.types import SamplingParams, RequestOutput, Request
 
