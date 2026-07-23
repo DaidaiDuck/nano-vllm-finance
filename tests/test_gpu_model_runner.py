@@ -159,8 +159,10 @@ def test_prepare_inputs_matches_docstring_example(three_requests):
     assert logits_indices.tolist() == [3, 4, 5]
 
     # --- full-sequence / KV space -----------------------------------------------------
-    # seq_lens_k = num_computed + num_scheduled = history each request attends over
-    assert ENGINE_CTX.seq_lens_k.tolist() == [4, 6, 10]
+    # cu_seqlens_k = prefix sum of per-request key lengths (num_computed + num_scheduled).
+    # Lengths [4, 6, 10] -> cumulative [0, 4, 10, 20]. flash-attn 2.6.3's varlen paged API
+    # takes cu_seqlens_k (there is no seqused_k in this version).
+    assert ENGINE_CTX.cu_seqlens_k.tolist() == [0, 4, 10, 20]
 
     # slot = block_id * block_size + offset
     #   r1 pos 0..3 -> block 2, offsets 0..3      -> 2*4 + 0..3 = 8, 9, 10, 11
@@ -188,7 +190,7 @@ def test_prepare_inputs_dtypes(three_requests):
     assert logits_indices.dtype == torch.int64
     # flash-attn wants int32 for cumulative boundaries and block tables
     assert ENGINE_CTX.cu_seqlens_q.dtype == torch.int32
-    assert ENGINE_CTX.seq_lens_k.dtype == torch.int32
+    assert ENGINE_CTX.cu_seqlens_k.dtype == torch.int32
     assert ENGINE_CTX.block_table.dtype == torch.int32
     # scatter index tensors must be int64
     assert ENGINE_CTX.slot_mapping.dtype == torch.int64
@@ -245,7 +247,7 @@ def test_pure_decode_batch():
     assert positions[0].tolist() == [3, 5, 9]
     assert ENGINE_CTX.cu_seqlens_q.tolist() == [0, 1, 2, 3]
     assert logits_indices.tolist() == [0, 1, 2]
-    assert ENGINE_CTX.seq_lens_k.tolist() == [4, 6, 10]
+    assert ENGINE_CTX.cu_seqlens_k.tolist() == [0, 4, 10, 20]  # lengths [4,6,10] cumulated
     assert ENGINE_CTX.slot_mapping.tolist() == [11, 13, 5]
     assert ENGINE_CTX.max_seqlen_q == 1
 
@@ -264,7 +266,7 @@ def test_single_request_prefill():
     assert req_ids == ["r1"]
     assert positions[0].tolist() == [0, 1, 2, 3, 4, 5]
     assert ENGINE_CTX.cu_seqlens_q.tolist() == [0, 6]
-    assert ENGINE_CTX.seq_lens_k.tolist() == [6]
+    assert ENGINE_CTX.cu_seqlens_k.tolist() == [0, 6]  # single length-6 sequence
     assert logits_indices.tolist() == [5]  # only the final token produces logits
     # pos 0..3 -> block 2 (8..11); pos 4,5 -> block 7 (28, 29)
     assert ENGINE_CTX.slot_mapping.tolist() == [8, 9, 10, 11, 28, 29]
@@ -288,7 +290,7 @@ def test_chunked_prefill_second_chunk():
 
     assert positions[0].tolist() == [4, 5, 6, 7]
     assert input_ids[0].tolist() == [_tok("r1", i) for i in (4, 5, 6, 7)]
-    assert ENGINE_CTX.seq_lens_k.tolist() == [8]  # eight tokens of history once this lands
+    assert ENGINE_CTX.cu_seqlens_k.tolist() == [0, 8]  # eight tokens of history once this lands
     assert ENGINE_CTX.slot_mapping.tolist() == [28, 29, 30, 31]  # all inside block 7
     assert logits_indices.tolist() == [3]
 

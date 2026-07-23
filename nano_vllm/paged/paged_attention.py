@@ -6,7 +6,7 @@ from typing_extensions import deprecated
 class AttnContext:          # ENGINE_CTX (Similar to vLLM's attn_metadata)
     block_table = None      # [batch_size, max_blocks] 
     cu_seqlens_q = None     # [batch+1]
-    seq_lens_k = None       # [batch]
+    cu_seqlens_k = None     # [batch+1]
     slot_mapping = None     # [sum of num_scheduled_tokens] 
     max_seqlen_q = None     # int 
     max_seqlen_k = None     # int
@@ -54,7 +54,7 @@ def batch_attn_forward(
         k=self.k_cache, # flash_attn_varlen_func will read history k and v from KVCache. 
         v=self.v_cache,
         cu_seqlens_q=ctx.cu_seqlens_q,
-        seqused_k=ctx.seq_lens_k,
+        cu_seqlens_k=ctx.cu_seqlens_k,
         max_seqlen_q=ctx.max_seqlen_q, 
         max_seqlen_k=ctx.max_seqlen_k,
         block_table=ctx.block_table,

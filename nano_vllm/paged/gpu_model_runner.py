@@ -71,7 +71,7 @@ class GPUModelRunner:
         # cu_seqlens_q: cumulative seq_lens of q
         # seq_lens_k: the history keys each forward will look at = num_computed + num_scheduled tokens of each request in batch 
         # block_tables: block_ids of each request in batch
-        cu_seqlens_q, seq_lens_k, block_tables = [0], [], []
+        cu_seqlens_q, cu_seqlens_k, seq_lens_k, block_tables = [0], [0], [], []
 
         for rid in req_ids:
             req:Request = self.requests[rid] 
@@ -89,6 +89,7 @@ class GPUModelRunner:
                 slot_mapping.append(kvcache_index)
             cu_seqlens_q.append(cu_seqlens_q[-1] + num_scheduled) 
             seq_lens_k.append(start + num_scheduled) 
+            cu_seqlens_k.append(cu_seqlens_k[-1] + seq_lens_k[-1]) 
             block_tables.append(block_ids) 
         
         logits_indices =  [c - 1 for c in cu_seqlens_q[1:]]  # the line number of the last token of each request in the hidden states
@@ -97,7 +98,6 @@ class GPUModelRunner:
         input_ids = torch.tensor([input_ids], dtype=torch.int64, device="cuda") 
         positions = torch.tensor([positions], dtype=torch.int64, device="cuda") 
         ENGINE_CTX.cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, device="cuda") 
-        ENGINE_CTX.seq_lens_k = torch.tensor(seq_lens_k, dtype=torch.int32, device="cuda") 
         # Pad the block_table to shape [batch, max_blocks] 
         max_blocks = max(len(block_ids) for block_ids in block_tables)
         # Convert block_tables [[block0], [block1, block2], [block3, block5]] to [[block0, 0], [block1, block2], [block3, block5]]
@@ -106,6 +106,7 @@ class GPUModelRunner:
         ENGINE_CTX.slot_mapping = torch.tensor(slot_mapping, dtype=torch.int64, device="cuda")
         ENGINE_CTX.max_seqlen_q = max(scheduler_output.num_scheduled_tokens.values()) 
         ENGINE_CTX.max_seqlen_k = max(seq_lens_k)
+        ENGINE_CTX.cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, device="cuda") 
 
         logits_indices = torch.tensor(logits_indices, dtype=torch.int64, device="cuda") 
         return req_ids, input_ids, positions, logits_indices
