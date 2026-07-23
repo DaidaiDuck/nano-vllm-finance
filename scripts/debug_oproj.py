@@ -1,15 +1,13 @@
-"""Find the exact reshape bug: compare the o_proj INPUT (nano vs HF) and brute-force the layout.
+"""Find the exact reshape bug by comparing the o_proj INPUT (nano vs HF).
 
 self_attn output diverges (debug_attn_output) but the flash output was correct
 (debug_attn_layer0), so `out.reshape(*input_shape, -1)` feeds o_proj a wrongly-laid-out
-tensor. o_proj weights are shared, so its input is what differs. This captures:
+tensor. o_proj weights are shared, so its input is what differs.
 
-  - nano_raw    : the flash output [total, heads, head_dim] (via a spy)
-  - nano_oproj  : the tensor nano actually feeds o_proj [1, seq, hidden] (pre-forward hook)
-  - hf_oproj    : the tensor HF feeds o_proj [1, seq, hidden] (pre-forward hook)
-
-Then it reshapes nano_raw several ways and reports which one reproduces hf_oproj. The layout
-that matches is the correct reshape; nano's current one is the bug.
+To read the o_proj input reliably, we temporarily swap layer-0's o_proj for nn.Identity, so
+the self_attn module output (a hook we know fires) *becomes* the reshaped pre-o_proj tensor.
+We also spy the raw flash output and brute-force which reshape of it reproduces HF's, which
+names the correct fix.
 
 Run on the pod:
     NANO_VLLM_TEST_MODEL=Qwen/Qwen2.5-3B-Instruct python scripts/debug_oproj.py
@@ -17,6 +15,7 @@ Run on the pod:
 import os
 
 import torch
+from torch import nn
 from transformers import AutoModelForCausalLM
 
 import nano_vllm.paged.paged_attention as pa
@@ -27,10 +26,29 @@ MODEL = os.getenv("NANO_VLLM_TEST_MODEL", "Qwen/Qwen2.5-3B-Instruct")
 PROMPT = "Hello"
 
 
-def _hook_oproj_input(backbone, store):
-    def pre_hook(_m, inputs):
-        store["in"] = inputs[0].detach().float()
-    return backbone.layers[0].self_attn.o_proj.register_forward_pre_hook(pre_hook)
+def _capture_attn0_with_identity_oproj(backbone, input_ids, pos_ids):
+    """Run a forward with layer-0's o_proj replaced by Identity; return the pre-o_proj tensor
+    that self_attn emits (== whatever the code fed o_proj), shape [1, seq, hidden]."""
+    attn0 = backbone.layers[0].self_attn
+    real_oproj = attn0.o_proj
+    attn0.o_proj = nn.Identity()
+
+    store = {}
+
+    def hook(_m, _inp, output):
+        store["out"] = (output[0] if isinstance(output, tuple) else output).detach().float()
+
+    h = attn0.register_forward_hook(hook)
+    kwargs = {"input_ids": input_ids}
+    if pos_ids is not None:
+        kwargs["position_ids"] = pos_ids
+    try:
+        with torch.no_grad():
+            backbone(**kwargs)
+    finally:
+        h.remove()
+        attn0.o_proj = real_oproj
+    return store["out"]
 
 
 def main():
@@ -49,7 +67,7 @@ def main():
     ENGINE_CTX.max_seqlen_q = P
     ENGINE_CTX.max_seqlen_k = P
 
-    # nano: spy flash to grab the raw output, and hook o_proj to grab its input.
+    # Spy the raw flash output while capturing nano's pre-o_proj tensor.
     nano_raw = {}
     real_flash = pa.flash_attn_varlen_func
 
@@ -59,42 +77,30 @@ def main():
         return out
 
     pa.flash_attn_varlen_func = spy
-    nano_oproj = {}
-    h = _hook_oproj_input(engine.model.model, nano_oproj)
-    with torch.no_grad():
-        engine.model.model(input_ids=input_ids, position_ids=pos_ids)
-    h.remove()
-    pa.flash_attn_varlen_func = real_flash
+    try:
+        nano_in = _capture_attn0_with_identity_oproj(engine.model.model, input_ids, pos_ids)
+    finally:
+        pa.flash_attn_varlen_func = real_flash
 
-    # HF: hook o_proj input.
     hf = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=torch.bfloat16, device_map="cuda")
     hf.eval()
-    hf_oproj = {}
-    h = _hook_oproj_input(hf.model, hf_oproj)
-    with torch.no_grad():
-        hf(input_ids)
-    h.remove()
+    hf_in = _capture_attn0_with_identity_oproj(hf.model, input_ids, None)
 
-    raw = nano_raw["out"]        # [P, HQ, D]
+    raw = nano_raw["out"]                 # [P, HQ, D]
     HQ, D = raw.shape[1], raw.shape[2]
-    nano_in = nano_oproj["in"]   # [1, P, HQ*D]
-    hf_in = hf_oproj["in"]       # [1, P, HQ*D]
-
-    print(f"\nflash raw out: {tuple(raw.shape)}   o_proj input: nano {tuple(nano_in.shape)} "
+    print(f"\nflash raw out {tuple(raw.shape)}   o_proj input: nano {tuple(nano_in.shape)} "
           f"hf {tuple(hf_in.shape)}")
-    print(f"nano_oproj_in vs hf_oproj_in   max|Δ| = {(nano_in - hf_in).abs().max().item():.4e}")
+    print(f"nano o_proj input vs hf o_proj input   max|Δ| = {(nano_in - hf_in).abs().max().item():.4e}")
 
-    # Brute-force which reshape of the raw flash output reproduces HF's o_proj input.
-    hf_flat = hf_in[0]  # [P, HQ*D]
+    hf_flat = hf_in[0]                    # [P, HQ*D]
+    print("\nwhich layout of the raw flash output reproduces HF's o_proj input:")
     candidates = {
-        "reshape(P, HQ*D)  [head-major, nano's current]": raw.reshape(P, HQ * D),
-        "transpose(0,1).reshape then back? [interleaved]":
-            raw.transpose(1, 2).reshape(P, HQ * D),  # dim-major instead of head-major
+        "raw.reshape(P, HQ*D)          [head-major, current]": raw.reshape(P, HQ * D),
+        "raw.transpose(1,2).reshape    [dim-major]":           raw.transpose(1, 2).reshape(P, HQ * D),
     }
-    print("\nwhich layout of the raw flash output matches HF's o_proj input:")
     for name, cand in candidates.items():
         diff = (cand - hf_flat).abs().max().item()
-        print(f"  {'MATCH' if diff < 5e-2 else 'no   '}  {name:48} max|Δ| = {diff:.4e}")
+        print(f"  {'MATCH' if diff < 5e-2 else 'no   '}  {name}  max|Δ| = {diff:.4e}")
 
 
 if __name__ == "__main__":
