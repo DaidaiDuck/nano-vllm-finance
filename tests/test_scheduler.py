@@ -9,8 +9,9 @@ from nano_vllm.paged.scheduler import Scheduler
 
 BLOCK = 16 
 
-class Cfg: 
-    max_model_len = 4096 
+class Cfg:
+    # Scheduler reads model_config.max_position_embeddings (the HF field) as its context limit.
+    max_position_embeddings = 4096
 
 def _kv(num_blocks):
     return KVCacheManager(block_pool=BlockPool(num_blocks), block_size= BLOCK) 
