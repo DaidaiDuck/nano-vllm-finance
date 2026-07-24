@@ -127,9 +127,9 @@ analysis: [m3_design.md](docs/design/m3_design.md) §7.
 
 ```bash
 cd nano-vllm-finance
-pip install -e .                    # ① 项目+ 运行依赖(transformers==5.13.0)
-pip install -r requirements.txt     # ② 补 dev 工具(pytest 等,跑测试要)
-pip show transformers               # 确认 5.13.0
+pip install -e .                    # 1. project + runtime deps (transformers==5.13.0)
+pip install -r requirements.txt     # 2. dev tools (pytest etc., needed to run tests)
+pip show transformers               # confirm 5.13.0
 
 # run the tests (CPU tests always; GPU integration on a CUDA machine)
 bash scripts/run_tests.sh

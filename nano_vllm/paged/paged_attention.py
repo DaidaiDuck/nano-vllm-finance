@@ -63,6 +63,7 @@ def batch_attn_forward(
 
     # Convert output's shape from [total_tokens, num_heads, head_dim] to [batch=1, total_tokens, hidden_size] hidden_size = num_heads * head_dim 
     attn_output = out.reshape(*input_shape, -1).contiguous() 
+    attn_output = self.o_proj(attn_output) 
     return attn_output, None 
     
 
