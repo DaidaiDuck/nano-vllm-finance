@@ -48,14 +48,21 @@ BATCH_SIZES = [1, 2, 4, 6, 8]
 # the test_m3_vs_hf notes). Confirmed with scripts/debug_numerics.py (top-2 logit margin).
 MIN_EXACT_PREFIX = 16
 
-# Lengths are deliberately uneven: mixing short and long prompts is what exercises the
-# packing boundaries (different prefill lengths sharing one forward pass).
+# Two deliberate properties:
+#   - Uneven lengths: mixing short and long prompts exercises the packing boundaries
+#     (different prefill lengths sharing one forward pass).
+#   - Low entropy / factual only: a token-for-token comparison with HF is only meaningful
+#     where the greedy argmax has a clear winner. Open-ended creative prompts (e.g. "write a
+#     haiku") hit positions where several tokens are EXACTLY tied in bf16 (margin 0.0000) --
+#     there the winner is decided by rounding, so nano, HF's generate(), and even a fresh HF
+#     forward all legitimately disagree. Those prompts are excluded; see
+#     docs/design/m4_debug_oproj_bug.md and scripts/debug_numerics.py.
 PROMPT_POOL = [
     "Hello",
     "What is 2 + 2?",
     "Explain photosynthesis in one sentence.",
     "Name three primary colors.",
-    "Write a haiku about the sea.",
+    "What is the capital of France?",
     "Why is the sky blue? Answer briefly.",
     "List the first five prime numbers.",
     "Translate 'good morning' into French.",
